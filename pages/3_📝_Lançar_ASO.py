@@ -1,5 +1,5 @@
 import streamlit as st
-from firebase_utils import db, bucket, log_activity, firestore # <-- CORREÇÃO AQUI
+from firebase_utils import db, bucket, log_activity, firestore
 from datetime import datetime
 import os
 
@@ -7,7 +7,7 @@ if not st.session_state.get("authentication_status"):
     st.error("Você precisa estar logado para acessar esta página.")
     st.stop()
 
-# st.logo("logobd.png") # Descomente se o arquivo de logo já estiver no GitHub
+st.logo("logobd.png") # ADICIONADO AQUI
 st.title("Lançamento de Novo ASO")
 
 with st.form("lancamento_aso_form", clear_on_submit=True):
@@ -36,12 +36,10 @@ if submit_button:
         with st.spinner("Salvando ASO..."):
             url_arquivo = None
             if arquivo_aso is not None:
-                # Usa o UID do usuário para criar uma pasta única, melhorando a segurança e organização
                 file_name = f"asos/{st.session_state['uid']}/{datetime.now().strftime('%Y%m%d%H%M%S')}_{arquivo_aso.name}"
                 blob = bucket.blob(file_name)
-                # Faz o upload a partir dos bytes do arquivo
                 blob.upload_from_string(arquivo_aso.getvalue(), content_type=arquivo_aso.type)
-                blob.make_public() # Torna o arquivo publicamente acessível via URL
+                blob.make_public()
                 url_arquivo = blob.public_url
 
             aso_data = {
@@ -55,7 +53,7 @@ if submit_button:
                 "crm_medico": crm_medico,
                 "url_arquivo_aso": url_arquivo,
                 "lancado_por": st.session_state['username'],
-                "data_lancamento": firestore.SERVER_TIMESTAMP # Agora 'firestore' é reconhecido
+                "data_lancamento": firestore.SERVER_TIMESTAMP
             }
 
             db.collection("asos").add(aso_data)
