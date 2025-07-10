@@ -17,7 +17,7 @@ if 'change_password_uid' not in st.session_state:
 st.logo("logobd.png")
 st.title("Painel de Administração de Usuários")
 
-# --- Formulário para Criar Novo Usuário (dentro de um expander) ---
+# --- Formulário para Criar Novo Usuário ---
 with st.expander("➕ Cadastrar Novo Usuário"):
     with st.form("new_user_form", clear_on_submit=True):
         email = st.text_input("Email")
@@ -39,7 +39,7 @@ with st.expander("➕ Cadastrar Novo Usuário"):
 st.divider()
 st.subheader("Gerenciar Usuários Existentes")
 
-# --- Função para Carregar Usuários ---
+# --- Função para Carregar Usuários com Cache ---
 @st.cache_data(ttl=60)
 def carregar_usuarios():
     users_list = auth.list_users().iterate_all()
@@ -64,39 +64,38 @@ try:
     
     # --- Loop Interativo para Gerenciar Usuários ---
     for user in usuarios:
-        # Não mostrar o próprio admin logado na lista para evitar auto-bloqueio
         if user['uid'] == st.session_state.get('uid'):
             continue
 
         with st.container(border=True):
             col1, col2, col3 = st.columns([3, 2, 2])
             
-            # Coluna 1: Informações do Usuário
             status_text = "🔴 Desabilitado" if user['disabled'] else "🟢 Habilitado"
             col1.write(f"**Email:** {user['email']}")
             col1.write(f"**Nível:** {user['role'].capitalize()}")
             col1.write(f"**Status:** {status_text}")
 
-            # Coluna 2: Ações de Habilitar/Desabilitar
+            # Ações de Habilitar/Desabilitar
             if user['disabled']:
                 if col2.button("✅ Habilitar Usuário", key=f"enable_{user['uid']}"):
                     auth.update_user(user['uid'], disabled=False)
                     log_activity(st.session_state['username'], "User Enabled", f"User: {user['email']}")
                     st.success(f"Usuário {user['email']} habilitado.")
+                    carregar_usuarios.clear() # <- CORREÇÃO: Limpa o cache
                     st.rerun()
             else:
                 if col2.button("🚫 Desabilitar Usuário", key=f"disable_{user['uid']}", type="primary"):
                     auth.update_user(user['uid'], disabled=True)
                     log_activity(st.session_state['username'], "User Disabled", f"User: {user['email']}")
                     st.warning(f"Usuário {user['email']} desabilitado.")
+                    carregar_usuarios.clear() # <- CORREÇÃO: Limpa o cache
                     st.rerun()
 
-            # Coluna 3: Ações de Senha
+            # Ações de Senha
             if col3.button("🔑 Alterar Senha", key=f"pwd_{user['uid']}"):
                 st.session_state.change_password_uid = user['uid'] if st.session_state.change_password_uid != user['uid'] else None
                 st.rerun()
 
-            # Formulário para alterar a senha (aparece quando o botão é clicado)
             if st.session_state.change_password_uid == user['uid']:
                 with st.form(f"form_pwd_{user['uid']}", clear_on_submit=True):
                     new_password = st.text_input("Nova Senha", type="password", key=f"new_pwd_input_{user['uid']}")
@@ -105,11 +104,10 @@ try:
                             auth.update_user(user['uid'], password=new_password)
                             log_activity(st.session_state['username'], "Password Changed", f"For user: {user['email']}")
                             st.success(f"Senha do usuário {user['email']} alterada com sucesso!")
-                            st.session_state.change_password_uid = None # Fecha o formulário
+                            st.session_state.change_password_uid = None
                             st.rerun()
                         else:
                             st.error("A nova senha deve ter no mínimo 6 caracteres.")
 
 except Exception as e:
     st.error(f"Erro ao carregar ou gerenciar usuários: {e}")
-
