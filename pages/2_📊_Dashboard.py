@@ -87,15 +87,19 @@ else:
     df_grafico = pd.merge(df_grafico, vencimentos_por_mes, on='mes_vencimento', how='left').fillna(0)
     df_grafico['Mês'] = df_grafico['mes_vencimento'].map(meses_pt)
 
-    # --- CORREÇÃO DEFINITIVA ---
-    # 1. Definimos a coluna 'Mês' como o índice do DataFrame.
-    #    Como o DataFrame foi construído em ordem numérica (1 a 12),
-    #    o índice de texto ('Jan', 'Fev'...) manterá essa ordem.
-    df_grafico = df_grafico.set_index('Mês')
+    # --- CORREÇÃO FINAL E DEFINITIVA ---
+    # 1. Criamos uma lista com a ordem cronológica exata dos meses.
+    ordem_meses_cronologica = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez']
+    
+    # 2. Convertemos a coluna 'Mês' para um tipo Categórico Ordenado, usando nossa lista.
+    #    Isso "ensina" ao Pandas e ao Streamlit a ordem correta.
+    df_grafico['Mês'] = pd.Categorical(df_grafico['Mês'], categories=ordem_meses_cronologica, ordered=True)
+    
+    # 3. Ordenamos o DataFrame por esta nova categoria para garantir.
+    df_grafico = df_grafico.sort_values('Mês')
 
-    # 2. Passamos para o st.bar_chart apenas a coluna de dados ('Quantidade').
-    #    O Streamlit usará o índice do DataFrame para o eixo X, respeitando sua ordem.
-    st.bar_chart(df_grafico[['Quantidade']])
+    # 4. Plotamos o gráfico, que agora respeitará a ordem da categoria definida.
+    st.bar_chart(df_grafico.set_index('Mês')[['Quantidade']])
 
 
 # --- Filtros e Tabela ---
