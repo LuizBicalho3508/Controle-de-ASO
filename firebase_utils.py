@@ -1,7 +1,7 @@
 import streamlit as st
 import firebase_admin
 from firebase_admin import credentials, firestore, storage, auth
-import pyrebase
+import pyrebase4 as pyrebase
 
 # --- INICIALIZAÇÃO DO FIREBASE ADMIN SDK ---
 # Usado para operações de backend seguras (acesso ao Firestore, gerenciamento de usuários)
