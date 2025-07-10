@@ -87,10 +87,15 @@ else:
     df_grafico = pd.merge(df_grafico, vencimentos_por_mes, on='mes_vencimento', how='left').fillna(0)
     df_grafico['Mês'] = df_grafico['mes_vencimento'].map(meses_pt)
 
-    # --- CORREÇÃO AQUI ---
-    # Em vez de definir o índice, passamos as colunas 'x' e 'y' diretamente.
-    # Isso garante que a ordem cronológica seja respeitada.
-    st.bar_chart(df_grafico, x='Mês', y='Quantidade')
+    # --- CORREÇÃO DEFINITIVA ---
+    # 1. Definimos a coluna 'Mês' como o índice do DataFrame.
+    #    Como o DataFrame foi construído em ordem numérica (1 a 12),
+    #    o índice de texto ('Jan', 'Fev'...) manterá essa ordem.
+    df_grafico = df_grafico.set_index('Mês')
+
+    # 2. Passamos para o st.bar_chart apenas a coluna de dados ('Quantidade').
+    #    O Streamlit usará o índice do DataFrame para o eixo X, respeitando sua ordem.
+    st.bar_chart(df_grafico[['Quantidade']])
 
 
 # --- Filtros e Tabela ---
