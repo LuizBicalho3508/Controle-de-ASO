@@ -9,7 +9,6 @@ if not st.session_state.get("authentication_status"):
     st.stop()
 
 # --- Inicialização do Session State ---
-# Garante que as chaves que usamos existem
 if 'expanded_aso' not in st.session_state:
     st.session_state.expanded_aso = None
 if 'delete_confirmation' not in st.session_state:
@@ -23,9 +22,12 @@ st.title("Dashboard de Controle de ASOs")
 @st.cache_data(ttl=60)
 def carregar_asos_firestore():
     docs = db.collection("asos").stream()
-    asos = [doc.to_dict() for doc in docs]
-    for i, doc in enumerate(db.collection("asos").stream()):
-        asos[i]['id'] = doc.id
+    asos = []
+    # Usar um loop explícito para garantir que o ID seja adicionado corretamente
+    for doc in db.collection("asos").stream():
+        data = doc.to_dict()
+        data['id'] = doc.id
+        asos.append(data)
     if not asos:
         return pd.DataFrame()
     return pd.DataFrame(asos)
@@ -43,16 +45,29 @@ df_asos['data_vencimento'] = pd.to_datetime(df_asos['data_vencimento'])
 hoje = datetime.now(timezone.utc)
 df_asos['dias_para_vencer'] = (df_asos['data_vencimento'] - hoje).dt.days
 
-def definir_status(dias):
-    if dias < 0: return "Vencido"
-    elif dias <= 30: return "Vence em até 30 dias"
-    elif dias <= 60: return "Vence em até 60 dias"
-    else: return "Em dia"
-df_asos['Status'] = df_asos['dias_para_vencer'].apply(definir_status)
+# --- MUDANÇA 1: A função agora recebe a linha inteira do DataFrame ---
+def definir_status(row):
+    # --- MUDANÇA 2: Verifica primeiro se o tipo de exame é 'Demissional' ---
+    if row.get('tipo_exame') == 'Demissional':
+        return 'Arquivado' # Define um status neutro para demissionais
+    else:
+        # --- MUDANÇA 3: A lógica antiga só é aplicada se não for demissional ---
+        dias = row['dias_para_vencer']
+        if dias < 0:
+            return "Vencido"
+        elif dias <= 30:
+            return "Vence em até 30 dias"
+        elif dias <= 60:
+            return "Vence em até 60 dias"
+        else:
+            return "Em dia"
 
-# --- Exibição dos Alertas ---
+# --- MUDANÇA 4: O .apply() agora é no DataFrame todo (axis=1) para passar a linha inteira ---
+df_asos['Status'] = df_asos.apply(definir_status, axis=1)
+
+
+# --- Exibição dos Alertas (agora ignora demissionais automaticamente) ---
 st.subheader("Alertas Importantes")
-# ... (código das métricas permanece o mesmo) ...
 col_metric1, col_metric2, col_metric3 = st.columns(3)
 vencidos = df_asos[df_asos['Status'] == 'Vencido'].shape[0]
 ate_30_dias = df_asos[df_asos['Status'] == 'Vence em até 30 dias'].shape[0]
@@ -65,7 +80,6 @@ col_metric3.metric("Vencem em até 60 dias", ate_60_dias)
 # --- Filtros e Tabela ---
 st.divider()
 st.subheader("Filtros e Relação de ASOs")
-# ... (código dos filtros permanece o mesmo) ...
 col_filter1, col_filter2 = st.columns(2)
 status_options = df_asos['Status'].unique()
 status_filter = col_filter1.multiselect("Filtrar por Status", options=status_options, default=status_options)
@@ -78,7 +92,7 @@ if nome_filter:
 df_display = df_filtrado[['nome_funcionario', 'funcao', 'data_vencimento', 'Status', 'id']].copy()
 df_display['data_vencimento'] = df_display['data_vencimento'].dt.strftime('%d/%m/%Y')
 
-# --- Loop de Exibição com a Lógica Corrigida ---
+# --- Loop de Exibição com a Lógica de Ações ---
 for index, row in df_display.iterrows():
     container = st.container(border=True)
     with container:
@@ -98,7 +112,7 @@ for index, row in df_display.iterrows():
                 st.session_state.delete_confirmation = row['id']
                 st.rerun()
 
-        # --- LÓGICA DE CONFIRMAÇÃO DE EXCLUSÃO (NOVO) ---
+        # Lógica de confirmação de exclusão
         if st.session_state.delete_confirmation == row['id']:
             st.error(f"Tem certeza que deseja excluir o ASO de **{row['nome_funcionario']}**?")
             confirm_col1, confirm_col2 = st.columns(2)
@@ -128,3 +142,4 @@ for index, row in df_display.iterrows():
                             st.write(f"**{key.replace('_', ' ').title()}:** {value}")
                 else:
                     st.warning("Não foi possível carregar os detalhes.")
+
