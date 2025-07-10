@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from firebase_utils import db, log_activity, firestore
-from datetime import datetime
+from datetime import datetime, timezone # <-- MUDANÇA 1: Importa timezone
 
 # --- Verificação de Login ---
 if not st.session_state.get("authentication_status"):
@@ -30,15 +30,13 @@ def carregar_asos_firestore():
 df_asos = carregar_asos_firestore()
 
 # --- LÓGICA REESTRUTURADA ---
-# 1. Verifica se o DataFrame está vazio. Se estiver, mostra uma mensagem e para.
 if df_asos.empty:
     st.info("Nenhum ASO cadastrado ainda. Vá para a página 'Lançar ASO' para adicionar o primeiro.")
     st.stop()
 
-# 2. Se não estiver vazio, prossiga para criar as colunas e exibir o dashboard.
 # --- Lógica de Alertas e Status ---
 df_asos['data_vencimento'] = pd.to_datetime(df_asos['data_vencimento'])
-hoje = datetime.now()
+hoje = datetime.now(timezone.utc) # <-- MUDANÇA 2: Usa a hora atual em UTC
 df_asos['dias_para_vencer'] = (df_asos['data_vencimento'] - hoje).dt.days
 
 def definir_status(dias):
@@ -94,7 +92,7 @@ for index, row in df_display.iterrows():
                 if st.button("🗑️ Excluir", key=f"del_{row['id']}", type="primary"):
                     st.session_state.delete_aso_id = row['id']
 
-# --- Lógica para os Modais de Ação (permanece a mesma) ---
+# --- Lógica para os Modais de Ação ---
 if 'view_aso_id' in st.session_state and st.session_state.view_aso_id:
     aso_id = st.session_state.view_aso_id
     doc = db.collection('asos').document(aso_id).get()
