@@ -15,7 +15,7 @@ if 'delete_confirmation' not in st.session_state:
     st.session_state.delete_confirmation = None
 
 # --- Configurações da Página ---
-st.logo("logobd.png") # ADICIONADO AQUI
+st.logo("logobd.png")
 st.title("Dashboard de Controle de ASOs")
 
 # --- Função para carregar os dados ---
@@ -64,6 +64,38 @@ ate_60_dias = df_asos[df_asos['Status'] == 'Vence em até 60 dias'].shape[0]
 col_metric1.metric("ASOs Vencidos", vencidos)
 col_metric2.metric("Vencem em até 30 dias", ate_30_dias)
 col_metric3.metric("Vencem em até 60 dias", ate_60_dias)
+
+# --- NOVO: GRÁFICO DE VENCIMENTOS POR MÊS ---
+st.divider()
+st.subheader(f"Gráfico de Vencimentos por Mês ({datetime.now().year})")
+
+# 1. Filtrar ASOs que precisam de atenção (Vencidos ou Vencendo)
+df_chart = df_asos[df_asos['Status'].isin(['Vencido', 'Vence em até 30 dias', 'Vence em até 60 dias'])].copy()
+
+# 2. Filtrar apenas os vencimentos do ano atual
+current_year = datetime.now().year
+df_chart = df_chart[df_chart['data_vencimento'].dt.year == current_year]
+
+if df_chart.empty:
+    st.info(f"Nenhum ASO vencido ou próximo do vencimento para o ano de {current_year}.")
+else:
+    # 3. Contar os ASOs por mês
+    df_chart['mes_vencimento'] = df_chart['data_vencimento'].dt.month
+    vencimentos_por_mes = df_chart.groupby('mes_vencimento').size().reset_index(name='Quantidade')
+
+    # 4. Preparar o DataFrame final para o gráfico, garantindo todos os meses
+    meses_pt = {
+        1: 'Jan', 2: 'Fev', 3: 'Mar', 4: 'Abr', 5: 'Mai', 6: 'Jun',
+        7: 'Jul', 8: 'Ago', 9: 'Set', 10: 'Out', 11: 'Nov', 12: 'Dez'
+    }
+    df_grafico = pd.DataFrame({'mes_vencimento': range(1, 13)})
+    df_grafico = pd.merge(df_grafico, vencimentos_por_mes, on='mes_vencimento', how='left').fillna(0)
+    df_grafico['Mês'] = df_grafico['mes_vencimento'].map(meses_pt)
+    df_grafico = df_grafico.set_index('Mês')
+
+    # 5. Exibir o gráfico de barras
+    st.bar_chart(df_grafico[['Quantidade']])
+
 
 # --- Filtros e Tabela ---
 st.divider()
