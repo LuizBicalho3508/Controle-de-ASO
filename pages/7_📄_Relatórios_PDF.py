@@ -90,8 +90,9 @@ if not df_asos.empty:
                     pdf.chapter_body(lista_funcionarios)
 
             # --- CORREÇÃO AQUI ---
-            # Removemos o .encode('latin-1'), pois pdf.output(dest='S') já retorna bytes.
-            pdf_output = pdf.output(dest='S')
+            # Usamos dest='B' para garantir que a saída seja um objeto de bytes,
+            # que é o formato correto para o st.download_button.
+            pdf_output = pdf.output(dest='B')
             
             st.download_button(
                 label="Baixar Relatório PDF",
