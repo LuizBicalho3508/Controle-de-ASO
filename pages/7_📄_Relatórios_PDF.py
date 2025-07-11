@@ -29,15 +29,15 @@ class PDF(FPDF):
 
     def chapter_title(self, title):
         self.set_font('Arial', 'B', 12)
-        # Usar encode/decode para lidar com caracteres especiais como acentos
-        self.cell(0, 10, title.encode('latin-1', 'replace').decode('latin-1'), 0, 1, 'L')
+        # Simplificado: Passa a string diretamente. A codificação será tratada na saída.
+        self.cell(0, 10, title, 0, 1, 'L')
         self.ln(4)
 
     def chapter_body(self, body):
         self.set_font('Arial', '', 10)
         for line in body:
-            # Usar encode/decode para lidar com caracteres especiais como acentos
-            self.multi_cell(0, 10, line.encode('latin-1', 'replace').decode('latin-1'))
+            # Simplificado: Passa a string diretamente.
+            self.multi_cell(0, 10, line)
         self.ln()
 
 # --- Lógica da Página ---
@@ -90,9 +90,9 @@ if not df_asos.empty:
                     pdf.chapter_body(lista_funcionarios)
 
             # --- CORREÇÃO AQUI ---
-            # Chamamos pdf.output() sem argumentos para obter os dados em formato de bytes,
-            # que é o formato esperado pelo st.download_button.
-            pdf_output = pdf.output()
+            # Voltamos ao método mais compatível: gerar o PDF como uma string de texto (dest='S')
+            # e depois codificá-la para o formato latin-1, que é o padrão da biblioteca FPDF.
+            pdf_output = pdf.output(dest='S').encode('latin-1')
             
             st.download_button(
                 label="Baixar Relatório PDF",
