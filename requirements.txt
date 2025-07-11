@@ -3,4 +3,4 @@ pandas
 pillow
 firebase-admin
 requests
-fpdf2
+openpyxl
