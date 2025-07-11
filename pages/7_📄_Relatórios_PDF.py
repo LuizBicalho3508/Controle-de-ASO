@@ -29,19 +29,21 @@ class PDF(FPDF):
 
     def chapter_title(self, title):
         self.set_font('Arial', 'B', 12)
-        self.cell(0, 10, title, 0, 1, 'L')
+        # Usar encode/decode para lidar com caracteres especiais como acentos
+        self.cell(0, 10, title.encode('latin-1', 'replace').decode('latin-1'), 0, 1, 'L')
         self.ln(4)
 
     def chapter_body(self, body):
         self.set_font('Arial', '', 10)
         for line in body:
-            self.multi_cell(0, 10, line)
+            # Usar encode/decode para lidar com caracteres especiais como acentos
+            self.multi_cell(0, 10, line.encode('latin-1', 'replace').decode('latin-1'))
         self.ln()
 
 # --- Lógica da Página ---
 st.info("Selecione os status dos ASOs que você deseja incluir no relatório PDF.")
 
-# Carrega os dados (sem cache para sempre ter a informação mais recente)
+# Carrega os dados
 docs = db.collection("asos").stream()
 asos = [doc.to_dict() for doc in docs]
 df_asos = pd.DataFrame(asos)
@@ -87,8 +89,10 @@ if not df_asos.empty:
                         lista_funcionarios.append(linha)
                     pdf.chapter_body(lista_funcionarios)
 
-            # Oferece o PDF para download
-            pdf_output = pdf.output(dest='S').encode('latin-1')
+            # --- CORREÇÃO AQUI ---
+            # Removemos o .encode('latin-1'), pois pdf.output(dest='S') já retorna bytes.
+            pdf_output = pdf.output(dest='S')
+            
             st.download_button(
                 label="Baixar Relatório PDF",
                 data=pdf_output,
@@ -97,4 +101,3 @@ if not df_asos.empty:
             )
 else:
     st.info("Nenhum ASO cadastrado no sistema.")
-
