@@ -1,13 +1,12 @@
 import streamlit as st
 from firebase_utils import db, bucket, log_activity, firestore
 from datetime import datetime
-import os
 
 if not st.session_state.get("authentication_status"):
     st.error("Você precisa estar logado para acessar esta página.")
     st.stop()
 
-st.logo("logobd.png") # ADICIONADO AQUI
+st.logo("logobd.png")
 st.title("Lançamento de Novo ASO")
 
 with st.form("lancamento_aso_form", clear_on_submit=True):
@@ -24,8 +23,13 @@ with st.form("lancamento_aso_form", clear_on_submit=True):
         nome_medico = st.text_input("Nome do Médico Responsável")
         crm_medico = st.text_input("CRM do Médico")
 
-    st.subheader("Anexo do ASO")
-    arquivo_aso = st.file_uploader("Selecione a foto ou PDF do ASO", type=['png', 'jpg', 'jpeg', 'pdf'])
+    st.subheader("Anexos (ASO, Exames Complementares, etc.)")
+    # MUDANÇA: aceita múltiplos arquivos
+    arquivos_aso = st.file_uploader(
+        "Selecione um ou mais arquivos",
+        type=['png', 'jpg', 'jpeg', 'pdf'],
+        accept_multiple_files=True
+    )
 
     submit_button = st.form_submit_button(label="Salvar ASO")
 
@@ -33,14 +37,16 @@ if submit_button:
     if not nome_funcionario or not data_exame or not data_vencimento:
         st.warning("Por favor, preencha os campos obrigatórios (*).")
     else:
-        with st.spinner("Salvando ASO..."):
-            url_arquivo = None
-            if arquivo_aso is not None:
-                file_name = f"asos/{st.session_state['uid']}/{datetime.now().strftime('%Y%m%d%H%M%S')}_{arquivo_aso.name}"
-                blob = bucket.blob(file_name)
-                blob.upload_from_string(arquivo_aso.getvalue(), content_type=arquivo_aso.type)
-                blob.make_public()
-                url_arquivo = blob.public_url
+        with st.spinner("Salvando ASO e anexos..."):
+            urls_anexos = []
+            if arquivos_aso:
+                # MUDANÇA: Loop para fazer upload de cada arquivo
+                for arquivo in arquivos_aso:
+                    file_name = f"asos/{st.session_state['uid']}/{datetime.now().strftime('%Y%m%d%H%M%S')}_{arquivo.name}"
+                    blob = bucket.blob(file_name)
+                    blob.upload_from_string(arquivo.getvalue(), content_type=arquivo.type)
+                    blob.make_public()
+                    urls_anexos.append(blob.public_url)
 
             aso_data = {
                 "nome_funcionario": nome_funcionario,
@@ -51,7 +57,7 @@ if submit_button:
                 "data_vencimento": datetime.combine(data_vencimento, datetime.min.time()),
                 "nome_medico": nome_medico,
                 "crm_medico": crm_medico,
-                "url_arquivo_aso": url_arquivo,
+                "anexos": urls_anexos, # MUDANÇA: Salva uma lista de URLs
                 "lancado_por": st.session_state['username'],
                 "data_lancamento": firestore.SERVER_TIMESTAMP
             }
