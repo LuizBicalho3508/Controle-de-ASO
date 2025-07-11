@@ -9,10 +9,9 @@ if not st.session_state.get("authentication_status"):
     st.stop()
 
 # --- Inicialização do Session State ---
-if 'expanded_aso' not in st.session_state:
-    st.session_state.expanded_aso = None
-if 'delete_confirmation' not in st.session_state:
-    st.session_state.delete_confirmation = None
+if 'expanded_aso' not in st.session_state: st.session_state.expanded_aso = None
+if 'delete_confirmation' not in st.session_state: st.session_state.delete_confirmation = None
+if 'edit_aso_id' not in st.session_state: st.session_state.edit_aso_id = None
 
 # --- Configurações da Página ---
 st.logo("logobd.png")
@@ -34,7 +33,6 @@ def carregar_asos_firestore():
 # Carrega os dados
 df_asos = carregar_asos_firestore()
 
-# --- LÓGICA PRINCIPAL ---
 if df_asos.empty:
     st.info("Nenhum ASO cadastrado ainda. Vá para a página 'Lançar ASO' para adicionar o primeiro.")
     st.stop()
@@ -45,14 +43,12 @@ hoje = datetime.now(timezone.utc)
 df_asos['dias_para_vencer'] = (df_asos['data_vencimento'] - hoje).dt.days
 
 def definir_status(row):
-    if row.get('tipo_exame') == 'Demissional':
-        return 'Arquivado'
-    else:
-        dias = row['dias_para_vencer']
-        if dias < 0: return "Vencido"
-        elif dias <= 30: return "Vence em até 30 dias"
-        elif dias <= 60: return "Vence em até 60 dias"
-        else: return "Em dia"
+    if row.get('tipo_exame') == 'Demissional': return 'Arquivado'
+    dias = row['dias_para_vencer']
+    if dias < 0: return "Vencido"
+    elif dias <= 30: return "Vence em até 30 dias"
+    elif dias <= 60: return "Vence em até 60 dias"
+    else: return "Em dia"
 df_asos['Status'] = df_asos.apply(definir_status, axis=1)
 
 # --- Exibição dos Alertas ---
@@ -65,50 +61,53 @@ col_metric1.metric("ASOs Vencidos", vencidos)
 col_metric2.metric("Vencem em até 30 dias", ate_30_dias)
 col_metric3.metric("Vencem em até 60 dias", ate_60_dias)
 
-# --- GRÁFICO DE VENCIMENTOS POR MÊS ---
+
+# --- Gráficos do Dashboard ---
 st.divider()
-st.subheader(f"Gráfico de Vencimentos por Mês ({datetime.now().year})")
+st.subheader("Análise Gráfica")
+chart_col1, chart_col2 = st.columns(2)
 
-df_chart = df_asos[df_asos['Status'].isin(['Vencido', 'Vence em até 30 dias', 'Vence em até 60 dias'])].copy()
-current_year = datetime.now().year
-df_chart = df_chart[df_chart['data_vencimento'].dt.year == current_year]
+# GRÁFICO DE BARRAS (Vencimentos por Mês)
+with chart_col1:
+    st.write(f"**Vencimentos por Mês ({datetime.now().year})**")
+    df_chart = df_asos[df_asos['Status'].isin(['Vencido', 'Vence em até 30 dias', 'Vence em até 60 dias'])].copy()
+    current_year = datetime.now().year
+    df_chart = df_chart[df_chart['data_vencimento'].dt.year == current_year]
 
-if df_chart.empty:
-    st.info(f"Nenhum ASO vencido ou próximo do vencimento para o ano de {current_year}.")
-else:
-    df_chart['mes_vencimento'] = df_chart['data_vencimento'].dt.month
-    vencimentos_por_mes = df_chart.groupby('mes_vencimento').size().reset_index(name='Quantidade')
+    if df_chart.empty:
+        st.info(f"Nenhum ASO vencendo em {current_year}.")
+    else:
+        df_chart['mes_vencimento'] = df_chart['data_vencimento'].dt.month
+        vencimentos_por_mes = df_chart.groupby('mes_vencimento').size().reset_index(name='Quantidade')
+        
+        meses_pt = {1: 'Jan', 2: 'Fev', 3: 'Mar', 4: 'Abr', 5: 'Mai', 6: 'Jun', 7: 'Jul', 8: 'Ago', 9: 'Set', 10: 'Out', 11: 'Nov', 12: 'Dez'}
+        df_grafico = pd.DataFrame({'mes_vencimento': range(1, 13)})
+        df_grafico = pd.merge(df_grafico, vencimentos_por_mes, on='mes_vencimento', how='left').fillna(0)
+        df_grafico['Mês'] = df_grafico['mes_vencimento'].map(meses_pt)
+        
+        ordem_meses_cronologica = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez']
+        df_grafico['Mês'] = pd.Categorical(df_grafico['Mês'], categories=ordem_meses_cronologica, ordered=True)
+        df_grafico = df_grafico.sort_values('Mês')
+        
+        st.bar_chart(df_grafico.set_index('Mês')[['Quantidade']])
 
-    meses_pt = {
-        1: 'Jan', 2: 'Fev', 3: 'Mar', 4: 'Abr', 5: 'Mai', 6: 'Jun',
-        7: 'Jul', 8: 'Ago', 9: 'Set', 10: 'Out', 11: 'Nov', 12: 'Dez'
-    }
-    df_grafico = pd.DataFrame({'mes_vencimento': range(1, 13)})
-    df_grafico = pd.merge(df_grafico, vencimentos_por_mes, on='mes_vencimento', how='left').fillna(0)
-    df_grafico['Mês'] = df_grafico['mes_vencimento'].map(meses_pt)
-
-    # --- CORREÇÃO FINAL E DEFINITIVA ---
-    # 1. Criamos uma lista com a ordem cronológica exata dos meses.
-    ordem_meses_cronologica = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez']
-    
-    # 2. Convertemos a coluna 'Mês' para um tipo Categórico Ordenado, usando nossa lista.
-    #    Isso "ensina" ao Pandas e ao Streamlit a ordem correta.
-    df_grafico['Mês'] = pd.Categorical(df_grafico['Mês'], categories=ordem_meses_cronologica, ordered=True)
-    
-    # 3. Ordenamos o DataFrame por esta nova categoria para garantir.
-    df_grafico = df_grafico.sort_values('Mês')
-
-    # 4. Plotamos o gráfico, que agora respeitará a ordem da categoria definida.
-    st.bar_chart(df_grafico.set_index('Mês')[['Quantidade']])
+# GRÁFICO DE BARRAS (Distribuição de Tipos de Exame)
+with chart_col2:
+    st.write("**Distribuição por Tipo de Exame**")
+    tipo_exame_counts = df_asos['tipo_exame'].value_counts()
+    if not tipo_exame_counts.empty:
+        st.bar_chart(tipo_exame_counts)
+    else:
+        st.info("Sem dados para exibir.")
 
 
 # --- Filtros e Tabela ---
 st.divider()
 st.subheader("Filtros e Relação de ASOs")
-col_filter1, col_filter2 = st.columns(2)
+filter_col1, filter_col2 = st.columns(2)
 status_options = df_asos['Status'].unique()
-status_filter = col_filter1.multiselect("Filtrar por Status", options=status_options, default=status_options)
-nome_filter = col_filter2.text_input("Filtrar por Nome do Funcionário")
+status_filter = filter_col1.multiselect("Filtrar por Status", options=status_options, default=status_options)
+nome_filter = filter_col2.text_input("Filtrar por Nome do Funcionário")
 
 df_filtrado = df_asos[df_asos['Status'].isin(status_filter)]
 if nome_filter:
@@ -117,7 +116,7 @@ if nome_filter:
 df_display = df_filtrado[['nome_funcionario', 'funcao', 'data_vencimento', 'Status', 'id']].copy()
 df_display['data_vencimento'] = df_display['data_vencimento'].dt.strftime('%d/%m/%Y')
 
-# --- Loop de Exibição com a Lógica de Ações ---
+# --- Loop de Exibição com todas as Ações ---
 for index, row in df_display.iterrows():
     container = st.container(border=True)
     with container:
@@ -126,15 +125,21 @@ for index, row in df_display.iterrows():
         col2.write(f"Vence em: {row['data_vencimento']}")
         col3.markdown(f"Status: **{row['Status']}**")
 
-        if col4.button("👁️ Ver Detalhes", key=f"view_{row['id']}"):
+        # Botões de Ação na última coluna
+        action_col = col4.container()
+        if action_col.button("👁️ Ver Detalhes", key=f"view_{row['id']}"):
             st.session_state.expanded_aso = row['id'] if st.session_state.expanded_aso != row['id'] else None
             st.rerun()
 
         if st.session_state.get("role") == "admin":
-            if col4.button("🗑️ Excluir", key=f"del_{row['id']}"):
+            if action_col.button("✏️ Editar", key=f"edit_{row['id']}"):
+                st.session_state.edit_aso_id = row['id'] if st.session_state.edit_aso_id != row['id'] else None
+                st.rerun()
+            if action_col.button("🗑️ Excluir", key=f"del_{row['id']}"):
                 st.session_state.delete_confirmation = row['id']
                 st.rerun()
 
+        # Lógica de confirmação de exclusão
         if st.session_state.delete_confirmation == row['id']:
             st.error(f"Tem certeza que deseja excluir o ASO de **{row['nome_funcionario']}**?")
             confirm_col1, confirm_col2 = st.columns(2)
@@ -142,13 +147,39 @@ for index, row in df_display.iterrows():
                 db.collection('asos').document(row['id']).delete()
                 log_activity(st.session_state['username'], "ASO Deleted", f"ID: {row['id']}")
                 st.session_state.delete_confirmation = None
+                carregar_asos_firestore.clear()
                 st.success(f"ASO de {row['nome_funcionario']} excluído.")
                 st.rerun()
             if confirm_col2.button("Cancelar", key=f"cancel_del_{row['id']}"):
                 st.session_state.delete_confirmation = None
                 st.rerun()
 
-    if st.session_state.expanded_aso == row['id']:
+    # Lógica para mostrar o formulário de edição ou o expander de detalhes
+    if st.session_state.edit_aso_id == row['id']:
+        with st.form(key=f"edit_form_{row['id']}"):
+            st.subheader(f"Editando ASO de {row['nome_funcionario']}")
+            aso_atual = db.collection('asos').document(row['id']).get().to_dict()
+            
+            novo_nome = st.text_input("Nome", value=aso_atual.get('nome_funcionario'))
+            nova_funcao = st.text_input("Função", value=aso_atual.get('funcao'))
+            
+            # Adicione outros campos para edição conforme necessário
+            # Ex: novo_tipo_exame = st.selectbox("Tipo de Exame", options=[...], index=...)
+            
+            submitted = st.form_submit_button("Salvar Alterações")
+            if submitted:
+                update_data = {
+                    'nome_funcionario': novo_nome,
+                    'funcao': nova_funcao,
+                }
+                db.collection('asos').document(row['id']).update(update_data)
+                log_activity(st.session_state['username'], "ASO Edited", f"ID: {row['id']}")
+                st.success("ASO atualizado com sucesso!")
+                st.session_state.edit_aso_id = None
+                carregar_asos_firestore.clear()
+                st.rerun()
+
+    elif st.session_state.expanded_aso == row['id']:
         with container:
             with st.expander("Detalhes do ASO", expanded=True):
                 doc = db.collection('asos').document(row['id']).get()
@@ -157,9 +188,13 @@ for index, row in df_display.iterrows():
                     for key, value in details.items():
                         if 'data' in key and isinstance(value, datetime):
                             st.write(f"**{key.replace('_', ' ').title()}:** {value.strftime('%d/%m/%Y')}")
-                        elif 'url' in key and value:
-                            st.link_button("Ver/Baixar Anexo", value)
-                        else:
-                            st.write(f"**{key.replace('_', ' ').title()}:** {value}")
+                        elif 'anexos' in key and value:
+                            st.write("**Anexos:**")
+                            for anexo_url in value:
+                                st.link_button(f"Baixar anexo", anexo_url)
+                        elif 'url' in key and value: # Para compatibilidade com ASOs antigos
+                            st.link_button("Baixar Anexo", value)
+                        elif key not in ['anexos', 'url_arquivo_aso']:
+                             st.write(f"**{key.replace('_', ' ').title()}:** {value}")
                 else:
                     st.warning("Não foi possível carregar os detalhes.")
