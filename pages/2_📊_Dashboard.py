@@ -125,7 +125,6 @@ for index, row in df_display.iterrows():
         col2.write(f"Vence em: {row['data_vencimento']}")
         col3.markdown(f"Status: **{row['Status']}**")
 
-        # Botões de Ação na última coluna
         action_col = col4.container()
         if action_col.button("👁️ Ver Detalhes", key=f"view_{row['id']}"):
             st.session_state.expanded_aso = row['id'] if st.session_state.expanded_aso != row['id'] else None
@@ -139,7 +138,6 @@ for index, row in df_display.iterrows():
                 st.session_state.delete_confirmation = row['id']
                 st.rerun()
 
-        # Lógica de confirmação de exclusão
         if st.session_state.delete_confirmation == row['id']:
             st.error(f"Tem certeza que deseja excluir o ASO de **{row['nome_funcionario']}**?")
             confirm_col1, confirm_col2 = st.columns(2)
@@ -154,23 +152,51 @@ for index, row in df_display.iterrows():
                 st.session_state.delete_confirmation = None
                 st.rerun()
 
-    # Lógica para mostrar o formulário de edição ou o expander de detalhes
+    # --- LÓGICA DE EDIÇÃO ATUALIZADA ---
     if st.session_state.edit_aso_id == row['id']:
         with st.form(key=f"edit_form_{row['id']}"):
             st.subheader(f"Editando ASO de {row['nome_funcionario']}")
+            
+            # Busca os dados mais recentes do ASO para preencher o formulário
             aso_atual = db.collection('asos').document(row['id']).get().to_dict()
+
+            # Prepara as opções e valores padrão para os campos
+            tipos_exame = ["Admissional", "Periódico", "Demissional", "Mudança de Risco", "Retorno ao Trabalho"]
+            resultados_exame = ["Apto", "Inapto", "Apto com Restrições"]
             
-            novo_nome = st.text_input("Nome", value=aso_atual.get('nome_funcionario'))
-            nova_funcao = st.text_input("Função", value=aso_atual.get('funcao'))
-            
-            # Adicione outros campos para edição conforme necessário
-            # Ex: novo_tipo_exame = st.selectbox("Tipo de Exame", options=[...], index=...)
-            
-            submitted = st.form_submit_button("Salvar Alterações")
-            if submitted:
+            tipo_index = tipos_exame.index(aso_atual.get('tipo_exame')) if aso_atual.get('tipo_exame') in tipos_exame else 0
+            resultado_index = resultados_exame.index(aso_atual.get('resultado')) if aso_atual.get('resultado') in resultados_exame else 0
+
+            data_exame_atual = aso_atual.get('data_exame').date() if isinstance(aso_atual.get('data_exame'), datetime) else datetime.now().date()
+            data_vencimento_atual = aso_atual.get('data_vencimento').date() if isinstance(aso_atual.get('data_vencimento'), datetime) else datetime.now().date()
+
+            # Cria o formulário completo
+            edit_col1, edit_col2 = st.columns(2)
+            with edit_col1:
+                novo_nome = st.text_input("Nome do Funcionário", value=aso_atual.get('nome_funcionario', ''))
+                novo_tipo_exame = st.selectbox("Tipo de Exame", options=tipos_exame, index=tipo_index)
+                nova_data_exame = st.date_input("Data do Exame", value=data_exame_atual)
+                novo_nome_medico = st.text_input("Nome do Médico", value=aso_atual.get('nome_medico', ''))
+            with edit_col2:
+                nova_funcao = st.text_input("Função", value=aso_atual.get('funcao', ''))
+                novo_resultado = st.selectbox("Resultado", options=resultados_exame, index=resultado_index)
+                nova_data_vencimento = st.date_input("Data de Vencimento", value=data_vencimento_atual)
+                novo_crm_medico = st.text_input("CRM do Médico", value=aso_atual.get('crm_medico', ''))
+
+            st.info("A alteração de arquivos anexados não é permitida nesta tela.")
+
+            # Botões de ação do formulário
+            submit_col1, submit_col2 = st.columns(2)
+            if submit_col1.form_submit_button("Salvar Alterações", type="primary"):
                 update_data = {
                     'nome_funcionario': novo_nome,
                     'funcao': nova_funcao,
+                    'tipo_exame': novo_tipo_exame,
+                    'resultado': novo_resultado,
+                    'data_exame': datetime.combine(nova_data_exame, datetime.min.time()),
+                    'data_vencimento': datetime.combine(nova_data_vencimento, datetime.min.time()),
+                    'nome_medico': novo_nome_medico,
+                    'crm_medico': novo_crm_medico,
                 }
                 db.collection('asos').document(row['id']).update(update_data)
                 log_activity(st.session_state['username'], "ASO Edited", f"ID: {row['id']}")
@@ -178,7 +204,12 @@ for index, row in df_display.iterrows():
                 st.session_state.edit_aso_id = None
                 carregar_asos_firestore.clear()
                 st.rerun()
+            
+            if submit_col2.form_submit_button("Cancelar"):
+                st.session_state.edit_aso_id = None
+                st.rerun()
 
+    # Lógica para mostrar o expander de detalhes
     elif st.session_state.expanded_aso == row['id']:
         with container:
             with st.expander("Detalhes do ASO", expanded=True):
@@ -192,7 +223,7 @@ for index, row in df_display.iterrows():
                             st.write("**Anexos:**")
                             for anexo_url in value:
                                 st.link_button(f"Baixar anexo", anexo_url)
-                        elif 'url' in key and value: # Para compatibilidade com ASOs antigos
+                        elif 'url' in key and value:
                             st.link_button("Baixar Anexo", value)
                         elif key not in ['anexos', 'url_arquivo_aso']:
                              st.write(f"**{key.replace('_', ' ').title()}:** {value}")
