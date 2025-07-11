@@ -78,4 +78,3 @@ if funcionario_selecionado:
         st.warning("Para corrigir, vá para os logs da aplicação no Streamlit Cloud, encontre a mensagem de erro 'FailedPrecondition' e clique no link fornecido para criar o índice no Firebase.")
     except Exception as e:
         st.error(f"Ocorreu um erro inesperado: {e}")
-
