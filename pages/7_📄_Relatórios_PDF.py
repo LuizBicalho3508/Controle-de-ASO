@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 from firebase_utils import db
 from datetime import datetime, timezone
-from fpdf import FPDF
+import io
 
 # --- Verificação de Login ---
 if not st.session_state.get("authentication_status"):
@@ -11,37 +11,10 @@ if not st.session_state.get("authentication_status"):
 
 # --- Configurações da Página ---
 st.logo("logobd.png")
-st.title("Gerador de Relatórios em PDF")
-
-# --- Classe para gerar o PDF ---
-class PDF(FPDF):
-    def header(self):
-        self.set_font('Arial', 'B', 12)
-        self.cell(0, 10, 'Relatório de Vencimento de ASOs', 0, 1, 'C')
-        self.set_font('Arial', '', 8)
-        self.cell(0, 10, f"Gerado em: {datetime.now().strftime('%d/%m/%Y %H:%M')}", 0, 1, 'C')
-        self.ln(10)
-
-    def footer(self):
-        self.set_y(-15)
-        self.set_font('Arial', 'I', 8)
-        self.cell(0, 10, f'Página {self.page_no()}', 0, 0, 'C')
-
-    def chapter_title(self, title):
-        self.set_font('Arial', 'B', 12)
-        # Usar encode/decode para lidar com caracteres especiais como acentos
-        self.cell(0, 10, title.encode('latin-1', 'replace').decode('latin-1'), 0, 1, 'L')
-        self.ln(4)
-
-    def chapter_body(self, body):
-        self.set_font('Arial', '', 10)
-        for line in body:
-            # Usar encode/decode para lidar com caracteres especiais como acentos
-            self.multi_cell(0, 10, line.encode('latin-1', 'replace').decode('latin-1'))
-        self.ln()
+st.title("Gerador de Relatórios em Excel (XLSX)")
 
 # --- Lógica da Página ---
-st.info("Selecione os status dos ASOs que você deseja incluir no relatório PDF.")
+st.info("Selecione os status dos ASOs que você deseja incluir no relatório.")
 
 # Carrega os dados
 docs = db.collection("asos").stream()
@@ -62,43 +35,50 @@ if not df_asos.empty:
         else: return "Em dia"
     df_asos['Status'] = df_asos.apply(definir_status, axis=1)
 
-    status_disponiveis = ['Vencido', 'Vence em até 30 dias', 'Vence em até 60 dias']
+    status_disponiveis = ['Vencido', 'Vence em até 30 dias', 'Vence em até 60 dias', 'Arquivado', 'Em dia']
     status_selecionados = st.multiselect(
         "Selecione os Status para o Relatório",
         options=status_disponiveis,
-        default=status_disponiveis
+        default=['Vencido', 'Vence em até 30 dias', 'Vence em até 60 dias']
     )
 
-    if st.button("Gerar Relatório PDF"):
+    if st.button("Gerar Relatório XLSX"):
         df_relatorio = df_asos[df_asos['Status'].isin(status_selecionados)]
         
         if df_relatorio.empty:
             st.warning("Nenhum ASO encontrado para os status selecionados.")
         else:
-            pdf = PDF()
-            pdf.add_page()
+            # Seleciona e renomeia as colunas para o relatório final
+            colunas_exportar = {
+                'nome_funcionario': 'Funcionário',
+                'funcao': 'Função',
+                'tipo_exame': 'Tipo de Exame',
+                'resultado': 'Resultado',
+                'data_exame': 'Data do Exame',
+                'data_vencimento': 'Data de Vencimento',
+                'Status': 'Status',
+                'lancado_por': 'Lançado Por'
+            }
+            df_export = df_relatorio[list(colunas_exportar.keys())].copy()
+            df_export.rename(columns=colunas_exportar, inplace=True)
             
-            for status in status_selecionados:
-                df_status = df_relatorio[df_relatorio['Status'] == status]
-                if not df_status.empty:
-                    pdf.chapter_title(status)
-                    lista_funcionarios = []
-                    for _, row in df_status.iterrows():
-                        venc_str = row['data_vencimento'].strftime('%d/%m/%Y')
-                        linha = f"Funcionário: {row['nome_funcionario']} | Função: {row.get('funcao', 'N/A')} | Vencimento: {venc_str}"
-                        lista_funcionarios.append(linha)
-                    pdf.chapter_body(lista_funcionarios)
+            # Formata as colunas de data
+            df_export['Data do Exame'] = pd.to_datetime(df_export['Data do Exame']).dt.strftime('%d/%m/%Y')
+            df_export['Data de Vencimento'] = pd.to_datetime(df_export['Data de Vencimento']).dt.strftime('%d/%m/%Y')
 
-            # --- CORREÇÃO AQUI ---
-            # Usamos dest='B' para garantir que a saída seja um objeto de bytes,
-            # que é o formato correto para o st.download_button.
-            pdf_output = pdf.output(dest='B')
+            # Cria um buffer de bytes na memória para salvar o arquivo Excel
+            output = io.BytesIO()
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                df_export.to_excel(writer, index=False, sheet_name='Relatório ASOs')
             
+            excel_data = output.getvalue()
+
             st.download_button(
-                label="Baixar Relatório PDF",
-                data=pdf_output,
-                file_name=f"relatorio_asos_{datetime.now().strftime('%Y%m%d')}.pdf",
-                mime="application/pdf"
+                label="📥 Baixar Relatório XLSX",
+                data=excel_data,
+                file_name=f"relatorio_asos_{datetime.now().strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
 else:
     st.info("Nenhum ASO cadastrado no sistema.")
+
