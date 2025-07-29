@@ -220,12 +220,15 @@ for index, row in df_display.iterrows():
                     if anexos and isinstance(anexos, list):
                         st.write("**Anexos:**")
                         for i, anexo_url in enumerate(anexos):
-                            st.link_button(f"Baixar Anexo {i+1}", anexo_url, key=f"anexo_{row['id']}_{i}")
+                            # --- CORREÇÃO AQUI ---
+                            # Substituímos st.link_button por st.markdown com a sintaxe de link
+                            st.markdown(f"- [Baixar Anexo {i+1}]({anexo_url})", unsafe_allow_html=True)
                     
                     # Lógica para compatibilidade com ASOs antigos (campo 'url_arquivo_aso')
                     elif details.get('url_arquivo_aso'):
                         st.write("**Anexo:**")
-                        st.link_button("Baixar ASO", details.get('url_arquivo_aso'), key=f"anexo_old_{row['id']}")
+                        # --- CORREÇÃO AQUI ---
+                        st.markdown(f"- [Baixar ASO]({details.get('url_arquivo_aso')})", unsafe_allow_html=True)
                     
                     else:
                         st.info("Nenhum anexo encontrado para este ASO.")
