@@ -98,12 +98,23 @@ with chart_col2:
 # --- Filtros e Tabela ---
 st.divider()
 st.subheader("Filtros e Relação de ASOs")
-filter_col1, filter_col2 = st.columns(2)
+# MUDANÇA: Adicionada uma terceira coluna para o novo filtro
+filter_col1, filter_col2, filter_col3 = st.columns(3)
+
 status_options = df_asos['Status'].unique()
 status_filter = filter_col1.multiselect("Filtrar por Status", options=status_options, default=status_options)
+
 nome_filter = filter_col2.text_input("Filtrar por Nome do Funcionário")
 
-df_filtrado = df_asos[df_asos['Status'].isin(status_filter)]
+# NOVO: Filtro por tipo de exame
+tipo_exame_options = df_asos['tipo_exame'].dropna().unique()
+tipo_exame_filter = filter_col3.multiselect("Filtrar por Tipo de Exame", options=tipo_exame_options, default=tipo_exame_options)
+
+# Lógica de filtragem atualizada para incluir o novo filtro
+df_filtrado = df_asos[
+    (df_asos['Status'].isin(status_filter)) &
+    (df_asos['tipo_exame'].isin(tipo_exame_filter))
+]
 if nome_filter:
     df_filtrado = df_filtrado[df_filtrado['nome_funcionario'].str.contains(nome_filter, case=False, na=False)]
 
@@ -187,7 +198,7 @@ for index, row in df_display.iterrows():
                 st.session_state.edit_aso_id = None
                 st.rerun()
 
-    # --- LÓGICA DE VISUALIZAÇÃO DE DETALHES (CORRIGIDA) ---
+    # --- LÓGICA DE VISUALIZAÇÃO DE DETALHES ---
     elif st.session_state.expanded_aso == row['id']:
         with container:
             with st.expander("Detalhes do ASO", expanded=True):
@@ -195,7 +206,6 @@ for index, row in df_display.iterrows():
                 if doc.exists:
                     details = doc.to_dict()
                     
-                    # Exibe os campos de texto de forma explícita e organizada
                     st.write(f"**Nome do Funcionário:** {details.get('nome_funcionario', 'N/A')}")
                     st.write(f"**Função:** {details.get('funcao', 'N/A')}")
                     st.write(f"**Tipo de Exame:** {details.get('tipo_exame', 'N/A')}")
@@ -215,19 +225,14 @@ for index, row in df_display.iterrows():
                     
                     st.divider()
                     
-                    # Lógica para mostrar os anexos (novo campo 'anexos')
                     anexos = details.get('anexos')
                     if anexos and isinstance(anexos, list):
                         st.write("**Anexos:**")
                         for i, anexo_url in enumerate(anexos):
-                            # --- CORREÇÃO AQUI ---
-                            # Substituímos st.link_button por st.markdown com a sintaxe de link
                             st.markdown(f"- [Baixar Anexo {i+1}]({anexo_url})", unsafe_allow_html=True)
                     
-                    # Lógica para compatibilidade com ASOs antigos (campo 'url_arquivo_aso')
                     elif details.get('url_arquivo_aso'):
                         st.write("**Anexo:**")
-                        # --- CORREÇÃO AQUI ---
                         st.markdown(f"- [Baixar ASO]({details.get('url_arquivo_aso')})", unsafe_allow_html=True)
                     
                     else:
