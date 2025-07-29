@@ -1,7 +1,8 @@
 import streamlit as st
 import pandas as pd
-from firebase_utils import db, log_activity, firestore
+from firebase_utils import db, bucket, log_activity, firestore
 from datetime import datetime, timezone
+import urllib.parse
 
 # --- Verificação de Login ---
 if not st.session_state.get("authentication_status"):
@@ -98,23 +99,14 @@ with chart_col2:
 # --- Filtros e Tabela ---
 st.divider()
 st.subheader("Filtros e Relação de ASOs")
-# MUDANÇA: Adicionada uma terceira coluna para o novo filtro
 filter_col1, filter_col2, filter_col3 = st.columns(3)
-
 status_options = df_asos['Status'].unique()
 status_filter = filter_col1.multiselect("Filtrar por Status", options=status_options, default=status_options)
-
 nome_filter = filter_col2.text_input("Filtrar por Nome do Funcionário")
-
-# NOVO: Filtro por tipo de exame
 tipo_exame_options = df_asos['tipo_exame'].dropna().unique()
 tipo_exame_filter = filter_col3.multiselect("Filtrar por Tipo de Exame", options=tipo_exame_options, default=tipo_exame_options)
 
-# Lógica de filtragem atualizada para incluir o novo filtro
-df_filtrado = df_asos[
-    (df_asos['Status'].isin(status_filter)) &
-    (df_asos['tipo_exame'].isin(tipo_exame_filter))
-]
+df_filtrado = df_asos[(df_asos['Status'].isin(status_filter)) & (df_asos['tipo_exame'].isin(tipo_exame_filter))]
 if nome_filter:
     df_filtrado = df_filtrado[df_filtrado['nome_funcionario'].str.contains(nome_filter, case=False, na=False)]
 
@@ -157,17 +149,20 @@ for index, row in df_display.iterrows():
                 st.session_state.delete_confirmation = None
                 st.rerun()
 
-    # --- LÓGICA DE EDIÇÃO ---
+    # --- LÓGICA DE EDIÇÃO COMPLETA ---
     if st.session_state.edit_aso_id == row['id']:
         with st.form(key=f"edit_form_{row['id']}"):
             st.subheader(f"Editando ASO de {row['nome_funcionario']}")
+            
             aso_atual = db.collection('asos').document(row['id']).get().to_dict()
+            
             tipos_exame = ["Admissional", "Periódico", "Demissional", "Mudança de Risco", "Retorno ao Trabalho"]
             resultados_exame = ["Apto", "Inapto", "Apto com Restrições"]
             tipo_index = tipos_exame.index(aso_atual.get('tipo_exame')) if aso_atual.get('tipo_exame') in tipos_exame else 0
             resultado_index = resultados_exame.index(aso_atual.get('resultado')) if aso_atual.get('resultado') in resultados_exame else 0
             data_exame_atual = aso_atual.get('data_exame').date() if isinstance(aso_atual.get('data_exame'), datetime) else datetime.now().date()
             data_vencimento_atual = aso_atual.get('data_vencimento').date() if isinstance(aso_atual.get('data_vencimento'), datetime) else datetime.now().date()
+
             edit_col1, edit_col2 = st.columns(2)
             with edit_col1:
                 novo_nome = st.text_input("Nome do Funcionário", value=aso_atual.get('nome_funcionario', ''))
@@ -179,21 +174,64 @@ for index, row in df_display.iterrows():
                 novo_resultado = st.selectbox("Resultado", options=resultados_exame, index=resultado_index)
                 nova_data_vencimento = st.date_input("Data de Vencimento", value=data_vencimento_atual)
                 novo_crm_medico = st.text_input("CRM do Médico", value=aso_atual.get('crm_medico', ''))
-            st.info("A alteração de arquivos anexados não é permitida nesta tela.")
+            
+            st.divider()
+            st.subheader("Gerenciar Anexos")
+            
+            anexos_atuais = aso_atual.get('anexos', [])
+            anexos_para_remover = []
+
+            if not anexos_atuais:
+                st.info("Nenhum anexo existente.")
+            else:
+                for i, anexo_url in enumerate(anexos_atuais):
+                    anexo_col1, anexo_col2 = st.columns([4, 1])
+                    file_name = urllib.parse.unquote(anexo_url.split('%2F')[-1].split('?')[0])
+                    anexo_col1.markdown(f"[{file_name}]({anexo_url})")
+                    if anexo_col2.checkbox("Remover", key=f"del_anexo_{row['id']}_{i}"):
+                        anexos_para_remover.append(anexo_url)
+
+            novos_anexos = st.file_uploader("Adicionar novos anexos", accept_multiple_files=True, key=f"upload_{row['id']}")
+
             submit_col1, submit_col2 = st.columns(2)
             if submit_col1.form_submit_button("Salvar Alterações", type="primary"):
-                update_data = {
-                    'nome_funcionario': novo_nome, 'funcao': nova_funcao, 'tipo_exame': novo_tipo_exame,
-                    'resultado': novo_resultado, 'data_exame': datetime.combine(nova_data_exame, datetime.min.time()),
-                    'data_vencimento': datetime.combine(nova_data_vencimento, datetime.min.time()),
-                    'nome_medico': novo_nome_medico, 'crm_medico': novo_crm_medico,
-                }
-                db.collection('asos').document(row['id']).update(update_data)
-                log_activity(st.session_state['username'], "ASO Edited", f"ID: {row['id']}")
-                st.success("ASO atualizado com sucesso!")
-                st.session_state.edit_aso_id = None
-                carregar_asos_firestore.clear()
-                st.rerun()
+                with st.spinner("Atualizando ASO..."):
+                    for url in anexos_para_remover:
+                        try:
+                            path_start = url.find("/o/") + 3
+                            path_end = url.find("?alt=media")
+                            file_path = urllib.parse.unquote(url[path_start:path_end])
+                            blob = bucket.blob(file_path)
+                            blob.delete()
+                        except Exception as e:
+                            st.warning(f"Não foi possível remover o anexo {url}. Erro: {e}")
+
+                    urls_novos_anexos = []
+                    for arquivo in novos_anexos:
+                        file_name = f"asos/{st.session_state['uid']}/{datetime.now().strftime('%Y%m%d%H%M%S')}_{arquivo.name}"
+                        blob = bucket.blob(file_name)
+                        blob.upload_from_string(arquivo.getvalue(), content_type=arquivo.type)
+                        blob.make_public()
+                        urls_novos_anexos.append(blob.public_url)
+
+                    anexos_finais = [url for url in anexos_atuais if url not in anexos_para_remover]
+                    anexos_finais.extend(urls_novos_anexos)
+                    
+                    update_data = {
+                        'nome_funcionario': novo_nome, 'funcao': nova_funcao, 'tipo_exame': novo_tipo_exame,
+                        'resultado': novo_resultado, 'data_exame': datetime.combine(nova_data_exame, datetime.min.time()),
+                        'data_vencimento': datetime.combine(nova_data_vencimento, datetime.min.time()),
+                        'nome_medico': novo_nome_medico, 'crm_medico': novo_crm_medico,
+                        'anexos': anexos_finais
+                    }
+                    
+                    db.collection('asos').document(row['id']).update(update_data)
+                    log_activity(st.session_state['username'], "ASO Edited", f"ID: {row['id']}")
+                    st.success("ASO atualizado com sucesso!")
+                    st.session_state.edit_aso_id = None
+                    carregar_asos_firestore.clear()
+                    st.rerun()
+            
             if submit_col2.form_submit_button("Cancelar"):
                 st.session_state.edit_aso_id = None
                 st.rerun()
