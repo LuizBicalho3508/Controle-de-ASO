@@ -67,31 +67,25 @@ st.divider()
 st.subheader("Análise Gráfica")
 chart_col1, chart_col2 = st.columns(2)
 
-# GRÁFICO DE BARRAS (Vencimentos por Mês)
 with chart_col1:
     st.write(f"**Vencimentos por Mês ({datetime.now().year})**")
     df_chart = df_asos[df_asos['Status'].isin(['Vencido', 'Vence em até 30 dias', 'Vence em até 60 dias'])].copy()
     current_year = datetime.now().year
     df_chart = df_chart[df_chart['data_vencimento'].dt.year == current_year]
-
     if df_chart.empty:
         st.info(f"Nenhum ASO vencendo em {current_year}.")
     else:
         df_chart['mes_vencimento'] = df_chart['data_vencimento'].dt.month
         vencimentos_por_mes = df_chart.groupby('mes_vencimento').size().reset_index(name='Quantidade')
-        
         meses_pt = {1: 'Jan', 2: 'Fev', 3: 'Mar', 4: 'Abr', 5: 'Mai', 6: 'Jun', 7: 'Jul', 8: 'Ago', 9: 'Set', 10: 'Out', 11: 'Nov', 12: 'Dez'}
         df_grafico = pd.DataFrame({'mes_vencimento': range(1, 13)})
         df_grafico = pd.merge(df_grafico, vencimentos_por_mes, on='mes_vencimento', how='left').fillna(0)
         df_grafico['Mês'] = df_grafico['mes_vencimento'].map(meses_pt)
-        
         ordem_meses_cronologica = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez']
         df_grafico['Mês'] = pd.Categorical(df_grafico['Mês'], categories=ordem_meses_cronologica, ordered=True)
         df_grafico = df_grafico.sort_values('Mês')
-        
         st.bar_chart(df_grafico.set_index('Mês')[['Quantidade']])
 
-# GRÁFICO DE BARRAS (Distribuição de Tipos de Exame)
 with chart_col2:
     st.write("**Distribuição por Tipo de Exame**")
     tipo_exame_counts = df_asos['tipo_exame'].value_counts()
@@ -152,25 +146,17 @@ for index, row in df_display.iterrows():
                 st.session_state.delete_confirmation = None
                 st.rerun()
 
-    # --- LÓGICA DE EDIÇÃO ATUALIZADA ---
+    # --- LÓGICA DE EDIÇÃO ---
     if st.session_state.edit_aso_id == row['id']:
         with st.form(key=f"edit_form_{row['id']}"):
             st.subheader(f"Editando ASO de {row['nome_funcionario']}")
-            
-            # Busca os dados mais recentes do ASO para preencher o formulário
             aso_atual = db.collection('asos').document(row['id']).get().to_dict()
-
-            # Prepara as opções e valores padrão para os campos
             tipos_exame = ["Admissional", "Periódico", "Demissional", "Mudança de Risco", "Retorno ao Trabalho"]
             resultados_exame = ["Apto", "Inapto", "Apto com Restrições"]
-            
             tipo_index = tipos_exame.index(aso_atual.get('tipo_exame')) if aso_atual.get('tipo_exame') in tipos_exame else 0
             resultado_index = resultados_exame.index(aso_atual.get('resultado')) if aso_atual.get('resultado') in resultados_exame else 0
-
             data_exame_atual = aso_atual.get('data_exame').date() if isinstance(aso_atual.get('data_exame'), datetime) else datetime.now().date()
             data_vencimento_atual = aso_atual.get('data_vencimento').date() if isinstance(aso_atual.get('data_vencimento'), datetime) else datetime.now().date()
-
-            # Cria o formulário completo
             edit_col1, edit_col2 = st.columns(2)
             with edit_col1:
                 novo_nome = st.text_input("Nome do Funcionário", value=aso_atual.get('nome_funcionario', ''))
@@ -182,21 +168,14 @@ for index, row in df_display.iterrows():
                 novo_resultado = st.selectbox("Resultado", options=resultados_exame, index=resultado_index)
                 nova_data_vencimento = st.date_input("Data de Vencimento", value=data_vencimento_atual)
                 novo_crm_medico = st.text_input("CRM do Médico", value=aso_atual.get('crm_medico', ''))
-
             st.info("A alteração de arquivos anexados não é permitida nesta tela.")
-
-            # Botões de ação do formulário
             submit_col1, submit_col2 = st.columns(2)
             if submit_col1.form_submit_button("Salvar Alterações", type="primary"):
                 update_data = {
-                    'nome_funcionario': novo_nome,
-                    'funcao': nova_funcao,
-                    'tipo_exame': novo_tipo_exame,
-                    'resultado': novo_resultado,
-                    'data_exame': datetime.combine(nova_data_exame, datetime.min.time()),
+                    'nome_funcionario': novo_nome, 'funcao': nova_funcao, 'tipo_exame': novo_tipo_exame,
+                    'resultado': novo_resultado, 'data_exame': datetime.combine(nova_data_exame, datetime.min.time()),
                     'data_vencimento': datetime.combine(nova_data_vencimento, datetime.min.time()),
-                    'nome_medico': novo_nome_medico,
-                    'crm_medico': novo_crm_medico,
+                    'nome_medico': novo_nome_medico, 'crm_medico': novo_crm_medico,
                 }
                 db.collection('asos').document(row['id']).update(update_data)
                 log_activity(st.session_state['username'], "ASO Edited", f"ID: {row['id']}")
@@ -204,28 +183,51 @@ for index, row in df_display.iterrows():
                 st.session_state.edit_aso_id = None
                 carregar_asos_firestore.clear()
                 st.rerun()
-            
             if submit_col2.form_submit_button("Cancelar"):
                 st.session_state.edit_aso_id = None
                 st.rerun()
 
-    # Lógica para mostrar o expander de detalhes
+    # --- LÓGICA DE VISUALIZAÇÃO DE DETALHES (CORRIGIDA) ---
     elif st.session_state.expanded_aso == row['id']:
         with container:
             with st.expander("Detalhes do ASO", expanded=True):
                 doc = db.collection('asos').document(row['id']).get()
                 if doc.exists:
                     details = doc.to_dict()
-                    for key, value in details.items():
-                        if 'data' in key and isinstance(value, datetime):
-                            st.write(f"**{key.replace('_', ' ').title()}:** {value.strftime('%d/%m/%Y')}")
-                        elif 'anexos' in key and value:
-                            st.write("**Anexos:**")
-                            for anexo_url in value:
-                                st.link_button(f"Baixar anexo", anexo_url)
-                        elif 'url' in key and value:
-                            st.link_button("Baixar Anexo", value)
-                        elif key not in ['anexos', 'url_arquivo_aso']:
-                             st.write(f"**{key.replace('_', ' ').title()}:** {value}")
+                    
+                    # Exibe os campos de texto de forma explícita e organizada
+                    st.write(f"**Nome do Funcionário:** {details.get('nome_funcionario', 'N/A')}")
+                    st.write(f"**Função:** {details.get('funcao', 'N/A')}")
+                    st.write(f"**Tipo de Exame:** {details.get('tipo_exame', 'N/A')}")
+                    st.write(f"**Resultado:** {details.get('resultado', 'N/A')}")
+                    
+                    data_exame = details.get('data_exame')
+                    if isinstance(data_exame, datetime):
+                        st.write(f"**Data do Exame:** {data_exame.strftime('%d/%m/%Y')}")
+                        
+                    data_vencimento = details.get('data_vencimento')
+                    if isinstance(data_vencimento, datetime):
+                        st.write(f"**Data de Vencimento:** {data_vencimento.strftime('%d/%m/%Y')}")
+                        
+                    st.write(f"**Médico:** {details.get('nome_medico', 'N/A')}")
+                    st.write(f"**CRM:** {details.get('crm_medico', 'N/A')}")
+                    st.write(f"**Lançado por:** {details.get('lancado_por', 'N/A')}")
+                    
+                    st.divider()
+                    
+                    # Lógica para mostrar os anexos (novo campo 'anexos')
+                    anexos = details.get('anexos')
+                    if anexos and isinstance(anexos, list):
+                        st.write("**Anexos:**")
+                        for i, anexo_url in enumerate(anexos):
+                            st.link_button(f"Baixar Anexo {i+1}", anexo_url, key=f"anexo_{row['id']}_{i}")
+                    
+                    # Lógica para compatibilidade com ASOs antigos (campo 'url_arquivo_aso')
+                    elif details.get('url_arquivo_aso'):
+                        st.write("**Anexo:**")
+                        st.link_button("Baixar ASO", details.get('url_arquivo_aso'), key=f"anexo_old_{row['id']}")
+                    
+                    else:
+                        st.info("Nenhum anexo encontrado para este ASO.")
                 else:
                     st.warning("Não foi possível carregar os detalhes.")
