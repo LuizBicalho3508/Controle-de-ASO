@@ -113,6 +113,10 @@ if nome_filter:
 df_display = df_filtrado[['nome_funcionario', 'funcao', 'data_vencimento', 'Status', 'id']].copy()
 df_display['data_vencimento'] = df_display['data_vencimento'].dt.strftime('%d/%m/%Y')
 
+# --- CORREÇÃO AQUI: Ordena o DataFrame pelo nome do funcionário ---
+df_display = df_display.sort_values(by='nome_funcionario', ascending=True)
+
+
 # --- Loop de Exibição com todas as Ações ---
 for index, row in df_display.iterrows():
     container = st.container(border=True)
