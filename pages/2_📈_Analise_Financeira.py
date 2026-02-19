@@ -4,25 +4,6 @@ import io
 import plotly.express as px
 from firebase_utils import db
 
-# --- CORREÇÃO ROBUSTA DE IMPORTAÇÃO (FieldPath) ---
-# Tenta importar de diferentes caminhos para garantir compatibilidade
-try:
-    # Tentativa 1: Caminho padrão (versões recentes)
-    from google.cloud.firestore import FieldPath
-except ImportError:
-    try:
-        # Tentativa 2: Caminho interno (algumas versões do firebase-admin)
-        from google.cloud.firestore_v1.field_path import FieldPath
-    except ImportError:
-        try:
-            # Tentativa 3: Importar módulo pai
-            from google.cloud import firestore
-            FieldPath = firestore.FieldPath
-        except Exception:
-            # Fallback final: Define um dummy se tudo falhar (evita crash, mas filtro pode falhar)
-            st.error("Erro crítico: Não foi possível importar FieldPath do Firestore. Atualize o requirements.txt.")
-            FieldPath = None
-
 # --- Configuração da Página ---
 st.set_page_config(page_title="Análise Financeira & Histórico", page_icon="📈", layout="wide")
 
@@ -130,9 +111,11 @@ def salvar_no_firestore(df_para_salvar):
     total_linhas = len(df_para_salvar)
 
     for index, row in df_para_salvar.iterrows():
-        # Cria ID único
-        evento_safe = "".join(c for c in row['Tipo de Evento'] if c.isalnum())
-        doc_id = f"{row['Empresa']}_{row['Competência'].replace('/', '-')}_{row['ID Func']}_{evento_safe}"
+        # ID Único: Empresa_Competencia_Func_Evento
+        # Removemos barras da competência para o ID ficar limpo
+        comp_safe = str(row['Competência']).replace('/', '-')
+        evento_safe = "".join(c for c in str(row['Tipo de Evento']) if c.isalnum())
+        doc_id = f"{row['Empresa']}_{comp_safe}_{row['ID Func']}_{evento_safe}"
         
         doc_ref = collection_ref.document(doc_id)
         dados_row = row.to_dict()
@@ -154,17 +137,14 @@ def salvar_no_firestore(df_para_salvar):
     return total_ops
 
 def carregar_filtros_disponiveis():
-    """Busca filtros disponíveis"""
+    """Busca filtros disponíveis de forma segura"""
+    # Tenta buscar apenas campos específicos, se falhar, busca tudo (fallback)
     try:
-        # Usa FieldPath se disponível, senão tenta string normal (fallback)
-        if FieldPath:
-            docs = db.collection('folha_eventos').select('Empresa', FieldPath('Competência')).stream()
-        else:
-            docs = db.collection('folha_eventos').select(['Empresa']).stream()
-            
+        # Nota: select com lista de strings funciona na maioria das versões
+        docs = db.collection('folha_eventos').select(['Empresa', 'Competência']).stream()
     except Exception:
-        # Último caso: tenta pegar tudo (lento, mas funciona se select falhar)
-        docs = db.collection('folha_eventos').limit(1000).stream()
+        # Se der erro de 'Path Competência', buscamos o documento inteiro (mais lento, mas seguro)
+        docs = db.collection('folha_eventos').stream()
 
     empresas = set()
     competencias = set()
@@ -178,35 +158,31 @@ def carregar_filtros_disponiveis():
 
 @st.cache_data(ttl=300)
 def carregar_dados_do_banco(empresas_sel, competencias_sel):
-    """Carrega dados filtrados"""
-    if not empresas_sel or not competencias_sel:
+    """Carrega dados filtrados (Híbrido: Banco + Pandas)"""
+    if not empresas_sel:
         return pd.DataFrame()
         
     registros = []
     collection = db.collection('folha_eventos')
     
     for emp in empresas_sel:
-        if FieldPath:
-            query = collection.where('Empresa', '==', emp).where(FieldPath('Competência'), 'in', competencias_sel).stream()
-        else:
-            # Fallback sem FieldPath (pode falhar se tiver acento, mas evita crash total)
-            query = collection.where('Empresa', '==', emp).stream()
-            
+        # ESTRATÉGIA SEGURA: Filtrar SOMENTE por Empresa no Banco
+        # Evita erro de parser com acentos em 'Competência'
+        query = collection.where('Empresa', '==', emp).stream()
+        
         for doc in query:
             d = doc.to_dict()
-            # Se usou fallback, filtra competência manualmente aqui
-            if not FieldPath and d.get('Competência') not in competencias_sel:
-                continue
-            registros.append(d)
+            # Filtragem em memória (Python) - 100% segura contra acentos
+            if d.get('Competência') in competencias_sel:
+                registros.append(d)
             
     return pd.DataFrame(registros)
 
 
 # --- Interface Principal ---
 
-# Logo com tratamento de erro
 try:
-    st.sidebar.image("logobd.png", width=300) # Ajustado para width="stretch" ou valor fixo conforme aviso
+    st.sidebar.image("logobd.png", width=300)
 except:
     pass
 
@@ -318,18 +294,17 @@ if not df_trabalho.empty:
     # Abas
     tab1, tab2, tab3 = st.tabs(["🏢 Visão Geral", "🧠 Inteligência", "📑 Tabela Detalhada"])
 
-    # ABA 1: Visão Geral (Ajustado width="stretch")
+    # ABA 1: Visão Geral
     with tab1:
         col_g1, col_g2 = st.columns(2)
         with col_g1:
             st.markdown("#### Custo por Empresa")
             fig_emp = px.bar(df.groupby('Empresa')['Valor (R$)'].sum().reset_index(), x='Empresa', y='Valor (R$)', color='Empresa', text_auto='.2s')
-            st.plotly_chart(fig_emp, width=0) # 'width=0' ou 'use_container_width=True' (mantendo True pois 'width="stretch"' pode falhar em versões antigas do Plotly, o aviso sugere, mas o parametro clássico ainda funciona melhor para gráficos)
-            # NOTA: Para st.plotly_chart, use_container_width=True ainda é o padrão robusto, mas vou deixar como estava pois o aviso era mais provável do st.dataframe ou st.image.
+            st.plotly_chart(fig_emp) 
         with col_g2:
             st.markdown("#### Custo por Tipo de Evento")
             fig_evt = px.pie(df.groupby('Tipo de Evento')['Valor (R$)'].sum().reset_index(), values='Valor (R$)', names='Tipo de Evento', hole=0.4)
-            st.plotly_chart(fig_evt) # Removi parametros conflitantes para usar o padrão
+            st.plotly_chart(fig_evt)
 
     # ABA 2: Outliers
     with tab2:
@@ -339,7 +314,7 @@ if not df_trabalho.empty:
         if not outliers.empty:
             st.warning(f"{len(outliers)} colaboradores excederam {limite_horas} horas.")
             outliers['Horas'] = outliers['Horas Decimais'].apply(formatar_horas_decimal_para_str)
-            st.dataframe(outliers[['Nome', 'Empresa', 'Horas', 'Cargo']], width=1000) # Ajustado
+            st.dataframe(outliers[['Nome', 'Empresa', 'Horas', 'Cargo']], width=1000)
         else:
             st.success("Tudo certo.")
 
@@ -377,5 +352,4 @@ if not df_trabalho.empty:
         cols_show = ['Empresa', 'Competência', 'Nome', 'Cargo', 'Banco 60%', 'Valor (R$)|60%', 'Horas DSR', 'Valor (R$)|DSR', 'Total (R$)']
         cols_show = [c for c in cols_show if c in final.columns]
         
-        # Correção do aviso: removido use_container_width=True
         st.dataframe(final[cols_show].style.format({"Valor (R$)|60%": "R$ {:,.2f}", "Valor (R$)|DSR": "R$ {:,.2f}", "Total (R$)": "R$ {:,.2f}"}))
