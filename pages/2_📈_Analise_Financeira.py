@@ -2,8 +2,8 @@ import streamlit as st
 import pandas as pd
 import io
 import plotly.express as px
-from firebase_utils import db  # Importando sua conexão existente
-from google.cloud.firestore import Client
+from firebase_utils import db
+from google.cloud.firestore import FieldPath # IMPORTANTE: Importação necessária para corrigir o erro do acento
 
 # --- Configuração da Página ---
 st.set_page_config(page_title="Análise Financeira & Histórico", page_icon="📈", layout="wide")
@@ -112,24 +112,20 @@ def salvar_no_firestore(df_para_salvar):
     total_linhas = len(df_para_salvar)
 
     for index, row in df_para_salvar.iterrows():
-        # Cria um ID ÚNICO para evitar duplicatas: Empresa + Competencia + ID Func + Evento
-        # Remove caracteres especiais do ID para evitar erros
+        # Cria um ID ÚNICO para evitar duplicatas
         evento_safe = "".join(c for c in row['Tipo de Evento'] if c.isalnum())
         doc_id = f"{row['Empresa']}_{row['Competência'].replace('/', '-')}_{row['ID Func']}_{evento_safe}"
         
         doc_ref = collection_ref.document(doc_id)
-        
-        # Converte dados para dict nativo do Python
         dados_row = row.to_dict()
         batch.set(doc_ref, dados_row)
         
         count += 1
         total_ops += 1
         
-        # Firestore limita batch a 500 operações
         if count >= 400:
             batch.commit()
-            batch = db.batch() # Reinicia batch
+            batch = db.batch()
             count = 0
             progress_bar.progress(min(total_ops / total_linhas, 1.0), text=f"Salvando registro {total_ops} de {total_linhas}...")
 
@@ -140,14 +136,9 @@ def salvar_no_firestore(df_para_salvar):
     return total_ops
 
 def carregar_filtros_disponiveis():
-    """Busca apenas as empresas e competências disponíveis para preencher os filtros sem baixar tudo"""
-    # Nota: Em Firestore puro, "select distinct" é difícil. 
-    # Idealmente teríamos uma coleção auxiliar 'metadados_folha', mas vamos fazer uma query otimizada aqui.
-    # Para simplificar e não onerar leitura, vamos pegar todos (se base for pequena) ou limitar.
-    # SUGESTÃO: Criar coleção separada de 'Competencias' no futuro.
-    
-    # Busca limitada para preencher filtros (pode ser otimizado depois)
-    docs = db.collection('folha_eventos').select(['Empresa', 'Competência']).stream()
+    """Busca opções para filtros usando FieldPath para evitar erros de acentuação"""
+    # CORREÇÃO AQUI: Usando FieldPath e passando argumentos posicionais para select
+    docs = db.collection('folha_eventos').select('Empresa', FieldPath('Competência')).stream()
     empresas = set()
     competencias = set()
     
@@ -158,22 +149,18 @@ def carregar_filtros_disponiveis():
         
     return sorted(list(empresas)), sorted(list(competencias))
 
-@st.cache_data(ttl=300) # Cache de 5 min
+@st.cache_data(ttl=300)
 def carregar_dados_do_banco(empresas_sel, competencias_sel):
-    """Carrega dados filtrados do banco"""
+    """Carrega dados filtrados do banco usando FieldPath"""
     if not empresas_sel or not competencias_sel:
         return pd.DataFrame()
         
-    # Firestore não aceita filtro 'in' com mais de 10 itens ou múltiplos arrays.
-    # Vamos fazer a query por empresa e filtrar competência no pandas se necessário, ou vice-versa.
-    
     registros = []
-    # Loop para contornar limitação do Firestore se tiver muitas empresas selecionadas
     collection = db.collection('folha_eventos')
     
-    # Query otimizada: Buscar por empresa (campo indexado)
     for emp in empresas_sel:
-        query = collection.where('Empresa', '==', emp).where('Competência', 'in', competencias_sel).stream()
+        # CORREÇÃO AQUI: Usando FieldPath('Competência') no lugar da string simples
+        query = collection.where('Empresa', '==', emp).where(FieldPath('Competência'), 'in', competencias_sel).stream()
         for doc in query:
             registros.append(doc.to_dict())
             
@@ -229,7 +216,6 @@ if modo_uso == "📂 Fazer Upload (Novos Dados)":
 else:
     st.subheader("Consulta Histórica")
     
-    # Carregar filtros
     with st.spinner("Carregando opções de filtro..."):
         try:
             opcoes_empresas, opcoes_competencias = carregar_filtros_disponiveis()
@@ -237,7 +223,6 @@ else:
             st.error(f"Erro ao conectar no banco: {e}")
             opcoes_empresas, opcoes_competencias = [], []
     
-    # Sidebar Filtros de Banco
     with st.sidebar:
         st.divider()
         st.header("Filtros do Banco")
@@ -271,11 +256,14 @@ if not df_trabalho.empty:
         sel_cargos = col_f1.multiselect("Filtrar Cargos", cargos_disp, default=cargos_disp)
         sel_eventos = col_f2.multiselect("Filtrar Eventos", eventos_disp, default=eventos_disp)
     
-    # Aplica filtros locais
     df = df_trabalho[
         (df_trabalho['Cargo'].isin(sel_cargos)) &
         (df_trabalho['Tipo de Evento'].isin(sel_eventos))
     ]
+    
+    if df.empty:
+        st.warning("Sem dados após filtros locais.")
+        st.stop()
     
     # --- KPIs ---
     total_custo = df['Valor (R$)'].sum()
@@ -337,20 +325,17 @@ if not df_trabalho.empty:
         pivot.columns = [f'{c[0]}|{c[1]}' for c in pivot.columns]
         pivot = pivot.reset_index()
         
-        # Cria colunas se não existirem
         for c in ['Valor (R$)|60%', 'Valor (R$)|DSR', 'Horas Decimais|60%', 'Horas Decimais|DSR']:
             if c not in pivot.columns: pivot[c] = 0.0
             
         pivot['Total (R$)'] = pivot['Valor (R$)|60%'] + pivot['Valor (R$)|DSR']
         if 'Valor (R$)|OUTROS' in pivot.columns: pivot['Total (R$)'] += pivot['Valor (R$)|OUTROS']
         
-        # Formata
         final = pivot.copy()
         final['Banco 60%'] = final['Horas Decimais|60%'].apply(formatar_horas_decimal_para_str)
         final['Horas DSR'] = final['Horas Decimais|DSR'].apply(formatar_horas_decimal_para_str)
         
         cols_show = ['Empresa', 'Competência', 'Nome', 'Cargo', 'Banco 60%', 'Valor (R$)|60%', 'Horas DSR', 'Valor (R$)|DSR', 'Total (R$)']
-        # Filtra colunas existentes
         cols_show = [c for c in cols_show if c in final.columns]
         
         st.dataframe(final[cols_show].style.format({"Valor (R$)|60%": "R$ {:,.2f}", "Valor (R$)|DSR": "R$ {:,.2f}", "Total (R$)": "R$ {:,.2f}"}), use_container_width=True)
