@@ -4,7 +4,7 @@ import io
 import plotly.express as px
 from firebase_utils import db
 
-# --- CORREÇÃO ROBUSTA DE IMPORTAÇÃO (FieldPath) ---
+# --- CORREÇÃO DE IMPORTAÇÃO (FieldPath) ---
 try:
     from google.cloud.firestore import FieldPath
 except ImportError:
@@ -15,7 +15,6 @@ except ImportError:
             from google.cloud import firestore
             FieldPath = firestore.FieldPath
         except Exception:
-            st.error("Erro crítico: Não foi possível importar FieldPath do Firestore. Atualize o requirements.txt.")
             FieldPath = None
 
 # --- Configuração da Página ---
@@ -26,11 +25,11 @@ if not st.session_state.get("authentication_status"):
     st.error("Você precisa estar logado para acessar esta página.")
     st.stop()
 
-# --- INICIALIZAÇÃO DO ESTADO (SESSION STATE) ---
+# --- INICIALIZAÇÃO DO STATE ---
 if 'df_financeiro' not in st.session_state:
     st.session_state['df_financeiro'] = pd.DataFrame()
 
-# --- Funções Auxiliares ---
+# --- FUNÇÕES AUXILIARES ---
 def converter_valor_monetario(valor_str):
     if pd.isna(valor_str): return 0.0
     try:
@@ -115,14 +114,13 @@ def processar_csv_financeiro(file_content, file_name):
             except: continue
     return pd.DataFrame(dados)
 
-# --- Funções de Banco de Dados ---
+# --- FUNÇÕES DE BANCO DE DADOS (DADOS E MAPEAMENTO) ---
+
 def salvar_no_firestore(df_para_salvar):
-    """Salva o DataFrame no Firestore em Lotes"""
     collection_ref = db.collection('folha_eventos')
     batch = db.batch()
     count = 0
     total_ops = 0
-    
     progress_bar = st.progress(0, text="Iniciando gravação...")
     total_linhas = len(df_para_salvar)
 
@@ -132,9 +130,7 @@ def salvar_no_firestore(df_para_salvar):
         doc_id = f"{row['Empresa']}_{comp_safe}_{row['ID Func']}_{evento_safe}"
         
         doc_ref = collection_ref.document(doc_id)
-        dados_row = row.to_dict()
-        batch.set(doc_ref, dados_row)
-        
+        batch.set(doc_ref, row.to_dict())
         count += 1
         total_ops += 1
         
@@ -144,231 +140,281 @@ def salvar_no_firestore(df_para_salvar):
             count = 0
             progress_bar.progress(min(total_ops / total_linhas, 1.0), text=f"Salvando {total_ops}/{total_linhas}...")
 
-    if count > 0:
-        batch.commit()
-        
+    if count > 0: batch.commit()
     progress_bar.empty()
     return total_ops
 
 def carregar_filtros_disponiveis():
-    """Busca filtros disponíveis de forma segura"""
     try:
         docs = db.collection('folha_eventos').select(['Empresa', 'Competência']).stream()
-    except Exception:
+    except:
         docs = db.collection('folha_eventos').stream()
-
-    empresas = set()
-    competencias = set()
-    
+    empresas, competencias = set(), set()
     for doc in docs:
         d = doc.to_dict()
         if 'Empresa' in d: empresas.add(d['Empresa'])
         if 'Competência' in d: competencias.add(d['Competência'])
-        
     return sorted(list(empresas)), sorted(list(competencias))
 
 @st.cache_data(ttl=300)
 def carregar_dados_do_banco(empresas_sel, competencias_sel):
-    """Carrega dados filtrados"""
-    if not empresas_sel:
-        return pd.DataFrame()
-        
+    if not empresas_sel: return pd.DataFrame()
     registros = []
     collection = db.collection('folha_eventos')
-    
     for emp in empresas_sel:
         query = collection.where('Empresa', '==', emp).stream()
         for doc in query:
             d = doc.to_dict()
             if d.get('Competência') in competencias_sel:
                 registros.append(d)
-            
     return pd.DataFrame(registros)
 
+# --- FUNÇÕES DE MAPEAMENTO DE ÁREAS (CONFIGURAÇÃO) ---
 
-# --- Interface Principal ---
+def carregar_mapa_areas():
+    """Carrega o dicionário Cargo -> Área do Firestore"""
+    doc = db.collection('parametros').document('mapeamento_areas').get()
+    if doc.exists:
+        return doc.to_dict().get('mapa', {})
+    return {}
+
+def salvar_mapa_areas(novo_mapa):
+    """Salva o dicionário Cargo -> Área no Firestore"""
+    db.collection('parametros').document('mapeamento_areas').set({'mapa': novo_mapa})
+
+# --- INTERFACE PRINCIPAL ---
 
 try:
     st.sidebar.image("logobd.png", width=300)
-except:
-    pass
+except: pass
 
 st.title("📊 Análise Financeira & Folha")
 
-# --- Seletor de Modo ---
-modo_uso = st.sidebar.radio("Fonte de Dados:", ["🗄️ Consultar Banco de Dados", "📂 Fazer Upload (Novos Dados)"])
+# --- CONTROLE DE ABAS (PRINCIPAL) ---
+tab_dashboard, tab_config = st.tabs(["📈 Dashboard Analítico", "⚙️ Configuração de Áreas"])
 
 # ==============================================================================
-# MODO 1: CONSULTA
+# ABA 1: DASHBOARD (Lógica de Carregamento e Visualização)
 # ==============================================================================
-if modo_uso == "🗄️ Consultar Banco de Dados":
-    st.subheader("Consulta Histórica")
+with tab_dashboard:
+    modo_uso = st.sidebar.radio("Fonte de Dados:", ["🗄️ Consultar Banco de Dados", "📂 Fazer Upload (Novos Dados)"])
     
-    with st.spinner("Carregando opções..."):
-        try:
-            opcoes_empresas, opcoes_competencias = carregar_filtros_disponiveis()
-        except Exception as e:
-            st.error(f"Erro ao conectar no banco: {e}")
-            opcoes_empresas, opcoes_competencias = [], []
-    
-    with st.sidebar:
-        st.divider()
-        st.header("Filtros do Banco")
-        filtro_empresa_db = st.multiselect("Empresas", opcoes_empresas, default=opcoes_empresas)
-        filtro_competencia_db = st.multiselect("Competências", opcoes_competencias, default=[opcoes_competencias[-1]] if opcoes_competencias else [])
-
-    if st.button("🔍 Buscar Dados"):
-        if not filtro_empresa_db or not filtro_competencia_db:
-            st.warning("Selecione Empresa e Competência.")
-        else:
-            with st.spinner("Buscando dados..."):
-                df_temp = carregar_dados_do_banco(filtro_empresa_db, filtro_competencia_db)
-                if df_temp.empty:
-                    st.warning("Nenhum dado encontrado.")
-                else:
-                    # SALVA NO SESSION STATE
-                    st.session_state['df_financeiro'] = df_temp
-                    st.success(f"{len(df_temp)} registros carregados!")
-
-# ==============================================================================
-# MODO 2: UPLOAD
-# ==============================================================================
-else:
-    st.subheader("Importação de Arquivos da Folha")
-    uploaded_files = st.file_uploader("Carregar CSVs", type=["csv"], accept_multiple_files=True)
-    
-    if uploaded_files:
-        dfs = []
-        for file in uploaded_files:
-            dfs.append(processar_csv_financeiro(file.getvalue(), file.name))
+    # --- BLOCO DE CARREGAMENTO DE DADOS ---
+    if modo_uso == "🗄️ Consultar Banco de Dados":
+        st.subheader("Consulta Histórica")
+        with st.spinner("Carregando opções..."):
+            try:
+                opcoes_empresas, opcoes_competencias = carregar_filtros_disponiveis()
+            except Exception as e:
+                st.error(f"Erro BD: {e}")
+                opcoes_empresas, opcoes_competencias = [], []
         
-        if dfs:
-            df_temp = pd.concat(dfs, ignore_index=True)
-            
-            if not df_temp.empty:
-                # SALVA NO SESSION STATE PARA VISUALIZAÇÃO
-                st.session_state['df_financeiro'] = df_temp
-                st.success(f"{len(df_temp)} registros processados.")
-                
-                col_save1, col_save2 = st.columns([2, 1])
-                with col_save1:
-                    st.info("Verifique os dados abaixo e clique em Salvar.")
-                with col_save2:
-                    if st.button("💾 SALVAR NO BANCO DE DADOS", type="primary"):
-                        try:
-                            qtd = salvar_no_firestore(df_temp)
-                            st.balloons()
-                            st.success(f"Sucesso! {qtd} registros salvos.")
-                        except Exception as e:
-                            st.error(f"Erro ao salvar: {e}")
+        with st.sidebar:
+            st.divider()
+            st.header("Filtros Globais")
+            filtro_empresa_db = st.multiselect("Empresas", opcoes_empresas, default=opcoes_empresas)
+            filtro_competencia_db = st.multiselect("Competências", opcoes_competencias, default=[opcoes_competencias[-1]] if opcoes_competencias else [])
+
+        if st.button("🔍 Buscar Dados"):
+            if not filtro_empresa_db or not filtro_competencia_db:
+                st.warning("Selecione Empresa e Competência.")
             else:
-                st.warning("Arquivos vazios.")
-
-# ==============================================================================
-# DASHBOARD (Baseado no Session State)
-# ==============================================================================
-
-# Verifica se há dados carregados na memória da sessão
-if 'df_financeiro' in st.session_state and not st.session_state['df_financeiro'].empty:
-    
-    # Recupera o DataFrame da memória (não perde quando recarrega a página)
-    df_full = st.session_state['df_financeiro']
-    
-    st.divider()
-    
-    # --- FILTROS LOCAIS (Interatividade corrigida) ---
-    with st.expander("🔎 Refinar Visualização (Filtros Locais)", expanded=True):
-        col_f1, col_f2 = st.columns(2)
-        
-        cargos_disp = sorted(df_full['Cargo'].unique())
-        eventos_disp = sorted(df_full['Tipo de Evento'].unique())
-        
-        # Filtros Multiselect
-        sel_cargos = col_f1.multiselect("Filtrar Cargos", cargos_disp, default=cargos_disp)
-        sel_eventos = col_f2.multiselect("Filtrar Eventos", eventos_disp, default=eventos_disp)
-    
-    # Aplica os filtros ao DataFrame da memória
-    df = df_full[
-        (df_full['Cargo'].isin(sel_cargos)) &
-        (df_full['Tipo de Evento'].isin(sel_eventos))
-    ]
-    
-    if df.empty:
-        st.warning("Sem dados para exibir com os filtros atuais.")
+                with st.spinner("Buscando dados..."):
+                    df_temp = carregar_dados_do_banco(filtro_empresa_db, filtro_competencia_db)
+                    if df_temp.empty:
+                        st.warning("Nenhum dado encontrado.")
+                    else:
+                        st.session_state['df_financeiro'] = df_temp
+                        st.success(f"{len(df_temp)} registros carregados!")
     else:
-        # --- RENDERIZAÇÃO DOS GRÁFICOS (KPIs e Abas) ---
+        st.subheader("Importação de CSV")
+        uploaded_files = st.file_uploader("Carregar CSVs", type=["csv"], accept_multiple_files=True)
+        if uploaded_files:
+            dfs = []
+            for file in uploaded_files:
+                dfs.append(processar_csv_financeiro(file.getvalue(), file.name))
+            if dfs:
+                df_temp = pd.concat(dfs, ignore_index=True)
+                if not df_temp.empty:
+                    st.session_state['df_financeiro'] = df_temp
+                    st.success(f"{len(df_temp)} processados.")
+                    if st.button("💾 SALVAR TUDO NO BANCO", type="primary"):
+                        salvar_no_firestore(df_temp)
+                        st.success("Salvo!")
+
+    # --- RENDERIZAÇÃO DO DASHBOARD ---
+    if 'df_financeiro' in st.session_state and not st.session_state['df_financeiro'].empty:
+        df_full = st.session_state['df_financeiro'].copy()
         
-        # KPIs
-        total_custo = df['Valor (R$)'].sum()
-        total_horas = df['Horas Decimais'].sum()
-        qtd_colab = df['ID Func'].nunique()
-        media = total_custo / qtd_colab if qtd_colab else 0
+        # 1. APLICAÇÃO DO MAPEAMENTO DE ÁREAS
+        mapa_areas = carregar_mapa_areas()
+        # Cria a coluna Área baseada no mapa, se não achar, põe "Não Definido"
+        df_full['Area'] = df_full['Cargo'].map(mapa_areas).fillna('Não Definido')
 
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("💰 Custo Total", f"R$ {total_custo:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-        c2.metric("⏱️ Horas Totais", f"{total_horas:,.1f}")
-        c3.metric("👥 Colaboradores", qtd_colab)
-        c4.metric("📊 Ticket Médio", f"R$ {media:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-
-        # Abas
-        tab1, tab2, tab3 = st.tabs(["🏢 Visão Geral", "🧠 Inteligência", "📑 Tabela Detalhada"])
-
-        # ABA 1: Visão Geral
-        with tab1:
-            col_g1, col_g2 = st.columns(2)
-            with col_g1:
-                st.markdown("#### Custo por Empresa")
-                fig_emp = px.bar(df.groupby('Empresa')['Valor (R$)'].sum().reset_index(), x='Empresa', y='Valor (R$)', color='Empresa', text_auto='.2s')
-                st.plotly_chart(fig_emp) 
-            with col_g2:
-                st.markdown("#### Custo por Tipo de Evento")
-                fig_evt = px.pie(df.groupby('Tipo de Evento')['Valor (R$)'].sum().reset_index(), values='Valor (R$)', names='Tipo de Evento', hole=0.4)
-                st.plotly_chart(fig_evt)
-
-        # ABA 2: Outliers
-        with tab2:
-            limite_horas = st.number_input("Alerta de Horas Acima de:", value=100)
-            df_out = df.groupby(['Nome', 'Empresa', 'Cargo'])['Horas Decimais'].sum().reset_index()
-            outliers = df_out[df_out['Horas Decimais'] > limite_horas].sort_values('Horas Decimais', ascending=False)
-            if not outliers.empty:
-                st.warning(f"{len(outliers)} colaboradores excederam {limite_horas} horas.")
-                outliers['Horas'] = outliers['Horas Decimais'].apply(formatar_horas_decimal_para_str)
-                st.dataframe(outliers[['Nome', 'Empresa', 'Horas', 'Cargo']], width=1000)
-            else:
-                st.success("Tudo certo.")
-
-        # ABA 3: Tabela Detalhada
-        with tab3:
-            def cat_evento(e):
-                e = str(e).upper()
-                if "60%" in e: return "60%"
-                if "DSR" in e: return "DSR"
-                return "OUTROS"
+        st.divider()
+        
+        # 2. FILTROS LOCAIS (COM ÁREA)
+        with st.expander("🔎 Refinar Visualização (Filtros: Área, Cargo, Evento)", expanded=True):
+            f_col1, f_col2, f_col3 = st.columns(3)
             
-            df['Cat'] = df['Tipo de Evento'].apply(cat_evento)
+            # Filtro de Área
+            areas_disp = sorted(df_full['Area'].unique())
+            sel_areas = f_col1.multiselect("Filtrar Áreas", areas_disp, default=areas_disp)
             
-            pivot = df.pivot_table(
-                index=['Empresa', 'Competência', 'Nome', 'Cargo'],
-                columns='Cat',
-                values=['Horas Decimais', 'Valor (R$)'],
-                aggfunc='sum',
-                fill_value=0
-            )
+            # Filtro de Cargo (Dinâmico com base na Área selecionada)
+            cargos_disp = sorted(df_full[df_full['Area'].isin(sel_areas)]['Cargo'].unique())
+            sel_cargos = f_col2.multiselect("Filtrar Cargos", cargos_disp, default=cargos_disp)
             
-            pivot.columns = [f'{c[0]}|{c[1]}' for c in pivot.columns]
-            pivot = pivot.reset_index()
-            
-            for c in ['Valor (R$)|60%', 'Valor (R$)|DSR', 'Horas Decimais|60%', 'Horas Decimais|DSR']:
-                if c not in pivot.columns: pivot[c] = 0.0
+            eventos_disp = sorted(df_full['Tipo de Evento'].unique())
+            sel_eventos = f_col3.multiselect("Filtrar Eventos", eventos_disp, default=eventos_disp)
+
+        # 3. FILTRAGEM DO DATAFRAME
+        df = df_full[
+            (df_full['Area'].isin(sel_areas)) &
+            (df_full['Cargo'].isin(sel_cargos)) &
+            (df_full['Tipo de Evento'].isin(sel_eventos))
+        ]
+
+        if df.empty:
+            st.warning("Sem dados para os filtros selecionados.")
+        else:
+            # KPIs
+            total_custo = df['Valor (R$)'].sum()
+            total_horas = df['Horas Decimais'].sum()
+            qtd_colab = df['ID Func'].nunique()
+            media = total_custo / qtd_colab if qtd_colab else 0
+
+            k1, k2, k3, k4 = st.columns(4)
+            k1.metric("💰 Custo Total", f"R$ {total_custo:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+            k2.metric("⏱️ Horas Totais", f"{total_horas:,.1f}")
+            k3.metric("👥 Colaboradores", qtd_colab)
+            k4.metric("📊 Ticket Médio", f"R$ {media:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+
+            # GRÁFICOS
+            subtab1, subtab2, subtab3 = st.tabs(["🏢 Visão por Área & Empresa", "🧠 Inteligência", "📑 Tabela Detalhada"])
+
+            with subtab1:
+                col_viz1, col_viz2 = st.columns(2)
+                with col_viz1:
+                    st.markdown("#### Custo por Área (Setor)")
+                    # Agrupa por Área e ordena
+                    df_area = df.groupby('Area')['Valor (R$)'].sum().reset_index().sort_values('Valor (R$)', ascending=True)
+                    fig_area = px.bar(df_area, x='Valor (R$)', y='Area', orientation='h', text_auto='.2s', title="Custo Total por Área")
+                    st.plotly_chart(fig_area, use_container_width=True)
                 
-            pivot['Total (R$)'] = pivot['Valor (R$)|60%'] + pivot['Valor (R$)|DSR']
-            if 'Valor (R$)|OUTROS' in pivot.columns: pivot['Total (R$)'] += pivot['Valor (R$)|OUTROS']
-            
-            final = pivot.copy()
-            final['Banco 60%'] = final['Horas Decimais|60%'].apply(formatar_horas_decimal_para_str)
-            final['Horas DSR'] = final['Horas Decimais|DSR'].apply(formatar_horas_decimal_para_str)
-            
-            cols_show = ['Empresa', 'Competência', 'Nome', 'Cargo', 'Banco 60%', 'Valor (R$)|60%', 'Horas DSR', 'Valor (R$)|DSR', 'Total (R$)']
-            cols_show = [c for c in cols_show if c in final.columns]
-            
-            st.dataframe(final[cols_show].style.format({"Valor (R$)|60%": "R$ {:,.2f}", "Valor (R$)|DSR": "R$ {:,.2f}", "Total (R$)": "R$ {:,.2f}"}))
+                with col_viz2:
+                    st.markdown("#### Custo por Empresa")
+                    df_emp = df.groupby('Empresa')['Valor (R$)'].sum().reset_index()
+                    fig_emp = px.pie(df_emp, values='Valor (R$)', names='Empresa', hole=0.4)
+                    st.plotly_chart(fig_emp, use_container_width=True)
+                
+                # Gráfico extra: Área vs Tipo de Evento (Sunburst)
+                st.markdown("#### Detalhamento: Área > Cargo > Evento")
+                fig_sun = px.sunburst(df, path=['Area', 'Cargo', 'Tipo de Evento'], values='Valor (R$)', color='Valor (R$)')
+                st.plotly_chart(fig_sun, use_container_width=True)
+
+            with subtab2:
+                # Inteligência
+                limite_horas = st.number_input("Alerta Horas >", value=100)
+                df_out = df.groupby(['Nome', 'Empresa', 'Area', 'Cargo'])['Horas Decimais'].sum().reset_index()
+                outliers = df_out[df_out['Horas Decimais'] > limite_horas].sort_values('Horas Decimais', ascending=False)
+                
+                if not outliers.empty:
+                    st.warning(f"{len(outliers)} pessoas acima do limite.")
+                    outliers['Horas'] = outliers['Horas Decimais'].apply(formatar_horas_decimal_para_str)
+                    st.dataframe(outliers[['Nome', 'Empresa', 'Area', 'Horas', 'Cargo']], use_container_width=True)
+                else:
+                    st.success("Tudo OK.")
+
+            with subtab3:
+                # Tabela Pivot
+                def cat_evento(e):
+                    e = str(e).upper()
+                    if "60%" in e: return "60%"
+                    if "DSR" in e: return "DSR"
+                    return "OUTROS"
+                
+                df['Cat'] = df['Tipo de Evento'].apply(cat_evento)
+                pivot = df.pivot_table(index=['Empresa', 'Area', 'Nome', 'Cargo'], columns='Cat', values=['Horas Decimais', 'Valor (R$)'], aggfunc='sum', fill_value=0)
+                pivot.columns = [f'{c[0]}|{c[1]}' for c in pivot.columns]
+                pivot = pivot.reset_index()
+                
+                for c in ['Valor (R$)|60%', 'Valor (R$)|DSR', 'Horas Decimais|60%', 'Horas Decimais|DSR']:
+                    if c not in pivot.columns: pivot[c] = 0.0
+                
+                pivot['Total (R$)'] = pivot['Valor (R$)|60%'] + pivot['Valor (R$)|DSR']
+                if 'Valor (R$)|OUTROS' in pivot.columns: pivot['Total (R$)'] += pivot['Valor (R$)|OUTROS']
+                
+                final = pivot.copy()
+                final['Banco 60%'] = final['Horas Decimais|60%'].apply(formatar_horas_decimal_para_str)
+                final['Horas DSR'] = final['Horas Decimais|DSR'].apply(formatar_horas_decimal_para_str)
+                
+                cols_show = ['Empresa', 'Area', 'Nome', 'Cargo', 'Banco 60%', 'Valor (R$)|60%', 'Horas DSR', 'Valor (R$)|DSR', 'Total (R$)']
+                cols_show = [c for c in cols_show if c in final.columns]
+                
+                st.dataframe(final[cols_show].style.format({"Valor (R$)|60%": "R$ {:,.2f}", "Valor (R$)|DSR": "R$ {:,.2f}", "Total (R$)": "R$ {:,.2f}"}), use_container_width=True)
+
+# ==============================================================================
+# ABA 2: CONFIGURAÇÃO DE ÁREAS (Mapeamento)
+# ==============================================================================
+with tab_config:
+    st.header("⚙️ Configuração de Áreas (De/Para)")
+    st.markdown("Defina qual **Área** (ex: NOC, Comercial, Adm) cada **Cargo** pertence. Essas configurações são salvas no banco.")
+    
+    # 1. Carrega Mapa Existente
+    with st.spinner("Carregando configurações..."):
+        mapa_atual = carregar_mapa_areas()
+    
+    # 2. Identifica Cargos dos Dados Atuais (se houver) para facilitar
+    cargos_identificados = []
+    if 'df_financeiro' in st.session_state and not st.session_state['df_financeiro'].empty:
+        cargos_identificados = sorted(st.session_state['df_financeiro']['Cargo'].unique())
+    else:
+        # Se não tiver dados carregados, usa as chaves do mapa salvo
+        cargos_identificados = sorted(list(mapa_atual.keys()))
+
+    if not cargos_identificados:
+        st.info("Nenhum cargo identificado ainda. Carregue dados na aba Dashboard primeiro.")
+    else:
+        # 3. Prepara DataFrame para Edição
+        # Combina cargos atuais com os já salvos para garantir que nada se perca
+        todos_cargos = sorted(list(set(cargos_identificados) | set(mapa_atual.keys())))
+        
+        data_editor_list = []
+        for cargo in todos_cargos:
+            data_editor_list.append({
+                "Cargo": cargo,
+                "Área Atribuída": mapa_atual.get(cargo, "") # Traz o salvo ou vazio
+            })
+        
+        df_editor = pd.DataFrame(data_editor_list)
+        
+        # 4. Exibe Editor
+        col_ed1, col_ed2 = st.columns([3, 1])
+        with col_ed1:
+            st.markdown("##### Editor de Atribuições")
+            df_editado = st.data_editor(
+                df_editor,
+                column_config={
+                    "Cargo": st.column_config.TextColumn("Cargo", disabled=True),
+                    "Área Atribuída": st.column_config.TextColumn("Área (Digite o nome)", help="Ex: NOC, Comercial, RH")
+                },
+                use_container_width=True,
+                height=500,
+                hide_index=True
+            )
+        
+        with col_ed2:
+            st.info("ℹ️ Dica: Digite o nome da área para cada cargo. O sistema agrupará automaticamente.")
+            if st.button("💾 SALVAR CONFIGURAÇÕES", type="primary"):
+                try:
+                    # Converte o DF editado de volta para dicionário
+                    novo_mapa = pd.Series(df_editado['Área Atribuída'].values, index=df_editado['Cargo']).to_dict()
+                    # Remove entradas vazias para limpar o banco
+                    novo_mapa = {k: v for k, v in novo_mapa.items() if v and str(v).strip() != ""}
+                    
+                    salvar_mapa_areas(novo_mapa)
+                    st.success("Configurações salvas com sucesso! Volte ao Dashboard para ver as atualizações.")
+                    st.balloons()
+                except Exception as e:
+                    st.error(f"Erro ao salvar: {e}")
