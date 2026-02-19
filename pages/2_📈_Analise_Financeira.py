@@ -4,6 +4,20 @@ import io
 import plotly.express as px
 from firebase_utils import db
 
+# --- CORREÇÃO ROBUSTA DE IMPORTAÇÃO (FieldPath) ---
+try:
+    from google.cloud.firestore import FieldPath
+except ImportError:
+    try:
+        from google.cloud.firestore_v1.field_path import FieldPath
+    except ImportError:
+        try:
+            from google.cloud import firestore
+            FieldPath = firestore.FieldPath
+        except Exception:
+            st.error("Erro crítico: Não foi possível importar FieldPath do Firestore. Atualize o requirements.txt.")
+            FieldPath = None
+
 # --- Configuração da Página ---
 st.set_page_config(page_title="Análise Financeira & Histórico", page_icon="📈", layout="wide")
 
@@ -111,8 +125,6 @@ def salvar_no_firestore(df_para_salvar):
     total_linhas = len(df_para_salvar)
 
     for index, row in df_para_salvar.iterrows():
-        # ID Único: Empresa_Competencia_Func_Evento
-        # Removemos barras da competência para o ID ficar limpo
         comp_safe = str(row['Competência']).replace('/', '-')
         evento_safe = "".join(c for c in str(row['Tipo de Evento']) if c.isalnum())
         doc_id = f"{row['Empresa']}_{comp_safe}_{row['ID Func']}_{evento_safe}"
@@ -138,12 +150,9 @@ def salvar_no_firestore(df_para_salvar):
 
 def carregar_filtros_disponiveis():
     """Busca filtros disponíveis de forma segura"""
-    # Tenta buscar apenas campos específicos, se falhar, busca tudo (fallback)
     try:
-        # Nota: select com lista de strings funciona na maioria das versões
         docs = db.collection('folha_eventos').select(['Empresa', 'Competência']).stream()
     except Exception:
-        # Se der erro de 'Path Competência', buscamos o documento inteiro (mais lento, mas seguro)
         docs = db.collection('folha_eventos').stream()
 
     empresas = set()
@@ -166,13 +175,9 @@ def carregar_dados_do_banco(empresas_sel, competencias_sel):
     collection = db.collection('folha_eventos')
     
     for emp in empresas_sel:
-        # ESTRATÉGIA SEGURA: Filtrar SOMENTE por Empresa no Banco
-        # Evita erro de parser com acentos em 'Competência'
         query = collection.where('Empresa', '==', emp).stream()
-        
         for doc in query:
             d = doc.to_dict()
-            # Filtragem em memória (Python) - 100% segura contra acentos
             if d.get('Competência') in competencias_sel:
                 registros.append(d)
             
@@ -188,15 +193,45 @@ except:
 
 st.title("📊 Análise Financeira & Folha")
 
-# --- Seletor de Modo ---
-modo_uso = st.sidebar.radio("Fonte de Dados:", ["📂 Fazer Upload (Novos Dados)", "🗄️ Consultar Banco de Dados"])
+# --- Seletor de Modo (ALTERADO: CONSULTA PRIMEIRO) ---
+modo_uso = st.sidebar.radio("Fonte de Dados:", ["🗄️ Consultar Banco de Dados", "📂 Fazer Upload (Novos Dados)"])
 
 df_trabalho = pd.DataFrame()
 
 # ==============================================================================
-# MODO 1: UPLOAD
+# MODO 1: CONSULTA (Agora o Padrão)
 # ==============================================================================
-if modo_uso == "📂 Fazer Upload (Novos Dados)":
+if modo_uso == "🗄️ Consultar Banco de Dados":
+    st.subheader("Consulta Histórica")
+    
+    with st.spinner("Carregando opções..."):
+        try:
+            opcoes_empresas, opcoes_competencias = carregar_filtros_disponiveis()
+        except Exception as e:
+            st.error(f"Erro ao conectar no banco: {e}")
+            opcoes_empresas, opcoes_competencias = [], []
+    
+    with st.sidebar:
+        st.divider()
+        st.header("Filtros do Banco")
+        filtro_empresa_db = st.multiselect("Empresas", opcoes_empresas, default=opcoes_empresas)
+        filtro_competencia_db = st.multiselect("Competências", opcoes_competencias, default=[opcoes_competencias[-1]] if opcoes_competencias else [])
+
+    if st.button("🔍 Buscar Dados"):
+        if not filtro_empresa_db or not filtro_competencia_db:
+            st.warning("Selecione Empresa e Competência.")
+        else:
+            with st.spinner("Buscando dados..."):
+                df_trabalho = carregar_dados_do_banco(filtro_empresa_db, filtro_competencia_db)
+                if df_trabalho.empty:
+                    st.warning("Nenhum dado encontrado.")
+                else:
+                    st.toast(f"{len(df_trabalho)} registros carregados!", icon="✅")
+
+# ==============================================================================
+# MODO 2: UPLOAD
+# ==============================================================================
+else:
     st.subheader("Importação de Arquivos da Folha")
     uploaded_files = st.file_uploader("Carregar CSVs", type=["csv"], accept_multiple_files=True)
     
@@ -224,36 +259,6 @@ if modo_uso == "📂 Fazer Upload (Novos Dados)":
                             st.error(f"Erro ao salvar: {e}")
             else:
                 st.warning("Arquivos vazios.")
-
-# ==============================================================================
-# MODO 2: CONSULTA
-# ==============================================================================
-else:
-    st.subheader("Consulta Histórica")
-    
-    with st.spinner("Carregando opções..."):
-        try:
-            opcoes_empresas, opcoes_competencias = carregar_filtros_disponiveis()
-        except Exception as e:
-            st.error(f"Erro ao conectar no banco: {e}")
-            opcoes_empresas, opcoes_competencias = [], []
-    
-    with st.sidebar:
-        st.divider()
-        st.header("Filtros do Banco")
-        filtro_empresa_db = st.multiselect("Empresas", opcoes_empresas, default=opcoes_empresas)
-        filtro_competencia_db = st.multiselect("Competências", opcoes_competencias, default=[opcoes_competencias[-1]] if opcoes_competencias else [])
-
-    if st.button("🔍 Buscar Dados"):
-        if not filtro_empresa_db or not filtro_competencia_db:
-            st.warning("Selecione Empresa e Competência.")
-        else:
-            with st.spinner("Buscando dados..."):
-                df_trabalho = carregar_dados_do_banco(filtro_empresa_db, filtro_competencia_db)
-                if df_trabalho.empty:
-                    st.warning("Nenhum dado encontrado.")
-                else:
-                    st.toast(f"{len(df_trabalho)} registros carregados!", icon="✅")
 
 # ==============================================================================
 # DASHBOARD
