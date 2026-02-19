@@ -3,7 +3,16 @@ import pandas as pd
 import io
 import plotly.express as px
 from firebase_utils import db
-from google.cloud.firestore import FieldPath # IMPORTANTE: Importação necessária para corrigir o erro do acento
+
+# --- CORREÇÃO DO IMPORT (FieldPath) ---
+# Tenta importar de diferentes caminhos para garantir compatibilidade entre versões
+try:
+    from google.cloud.firestore import FieldPath
+except ImportError:
+    try:
+        from google.cloud.firestore_v1.field_path import FieldPath
+    except ImportError:
+        from google.cloud.firestore_v1 import FieldPath
 
 # --- Configuração da Página ---
 st.set_page_config(page_title="Análise Financeira & Histórico", page_icon="📈", layout="wide")
@@ -137,8 +146,13 @@ def salvar_no_firestore(df_para_salvar):
 
 def carregar_filtros_disponiveis():
     """Busca opções para filtros usando FieldPath para evitar erros de acentuação"""
-    # CORREÇÃO AQUI: Usando FieldPath e passando argumentos posicionais para select
-    docs = db.collection('folha_eventos').select('Empresa', FieldPath('Competência')).stream()
+    # Usa FieldPath para garantir que o acento em Competência seja lido corretamente
+    try:
+        docs = db.collection('folha_eventos').select('Empresa', FieldPath('Competência')).stream()
+    except Exception:
+        # Fallback se select falhar (em alguns casos raros de permissão/índice)
+        docs = db.collection('folha_eventos').select(['Empresa']).stream()
+
     empresas = set()
     competencias = set()
     
@@ -159,7 +173,7 @@ def carregar_dados_do_banco(empresas_sel, competencias_sel):
     collection = db.collection('folha_eventos')
     
     for emp in empresas_sel:
-        # CORREÇÃO AQUI: Usando FieldPath('Competência') no lugar da string simples
+        # Usa FieldPath para filtrar corretamente campos com acentos
         query = collection.where('Empresa', '==', emp).where(FieldPath('Competência'), 'in', competencias_sel).stream()
         for doc in query:
             registros.append(doc.to_dict())
@@ -169,7 +183,12 @@ def carregar_dados_do_banco(empresas_sel, competencias_sel):
 
 # --- Interface Principal ---
 
-st.sidebar.image("logobd.png", use_container_width=True) if "logobd.png" in "logobd.png" else None
+# Tenta carregar logo sem quebrar se não existir
+try:
+    st.sidebar.image("logobd.png", use_container_width=True)
+except:
+    pass
+
 st.title("📊 Análise Financeira & Folha")
 
 # --- Seletor de Modo ---
