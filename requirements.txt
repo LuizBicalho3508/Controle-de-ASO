@@ -4,3 +4,4 @@ pillow
 firebase-admin
 requests
 openpyxl
+plotly
