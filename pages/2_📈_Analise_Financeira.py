@@ -1,44 +1,36 @@
 import streamlit as st
 import pandas as pd
 import io
-import re
-from datetime import datetime
+import plotly.express as px
 
 # --- Configuração da Página ---
-st.set_page_config(page_title="Análise Financeira", page_icon="📈", layout="wide")
+st.set_page_config(page_title="Análise Financeira 360°", page_icon="📈", layout="wide")
 
-# --- Verificação de Login (Padrão do seu projeto) ---
+# --- Estilos CSS Personalizados ---
+st.markdown("""
+    <style>
+    .big-font { font-size:24px !important; font-weight: bold; }
+    .kpi-card { background-color: #f0f2f6; padding: 20px; border-radius: 10px; text-align: center; }
+    </style>
+""", unsafe_allow_html=True)
+
+# --- Verificação de Login ---
 if not st.session_state.get("authentication_status"):
     st.error("Você precisa estar logado para acessar esta página.")
     st.stop()
 
-# --- Título e Logo ---
-# Tenta carregar o logo se existir, senão segue sem erro
-try:
-    st.logo("logobd.png")
-except:
-    pass
-
-st.title("📈 Dashboard de Análise de Folha/Extras")
-st.markdown("Faça o upload dos relatórios CSV (Ficha Financeira) para gerar indicadores estratégicos.")
-
-# --- Funções Auxiliares de Tratamento de Dados ---
-
+# --- Funções Auxiliares ---
 def converter_valor_monetario(valor_str):
-    """Converte string '1.234,56' para float 1234.56"""
     if pd.isna(valor_str): return 0.0
     try:
-        # Remove pontos de milhar e troca vírgula decimal por ponto
         limpo = str(valor_str).replace('.', '').replace(',', '.')
         return float(limpo)
     except:
         return 0.0
 
 def converter_horas(hora_str):
-    """Converte string '123:30 hs' para float de horas decimais"""
     if pd.isna(hora_str): return 0.0
     try:
-        # Remove ' hs' e espaços
         limpo = str(hora_str).lower().replace('hs', '').strip()
         partes = limpo.split(':')
         horas = int(partes[0])
@@ -48,54 +40,69 @@ def converter_horas(hora_str):
         return 0.0
 
 def processar_csv_financeiro(uploaded_file):
-    """
-    Lê o CSV linha por linha para lidar com a estrutura de seções (Eventos)
-    específica dos relatórios fornecidos.
-    """
-    stringio = io.StringIO(uploaded_file.getvalue().decode("latin-1")) # Encoding comum para esses sistemas
+    stringio = io.StringIO(uploaded_file.getvalue().decode("latin-1"))
     
     dados = []
     evento_atual = None
+    empresa_atual = "Desconhecida"
+    competencia_atual = "N/A"
     
-    for linha in stringio:
+    linhas = stringio.readlines()
+    
+    # Tentativa de extrair metadados do cabeçalho
+    if len(linhas) > 0:
+        # Linha 1 geralmente tem o nome da empresa: "0066 - NOME DA EMPRESA";...
+        partes_l1 = linhas[0].split(';')
+        if len(partes_l1) > 0:
+            empresa_raw = partes_l1[0].replace('"', '').strip()
+            # Remove o código inicial se existir (ex: "0066 - ")
+            if " - " in empresa_raw:
+                empresa_atual = empresa_raw.split(" - ", 1)[1]
+            else:
+                empresa_atual = empresa_raw
+                
+    if len(linhas) > 2:
+        # Linha 3 geralmente tem o período: "Período: 02/2026 à ..."
+        linha_periodo = linhas[2]
+        if "Período:" in linha_periodo:
+            try:
+                competencia_atual = linha_periodo.split("Período:")[1].split("à")[0].strip()
+            except:
+                pass
+
+    for linha in linhas:
         linha = linha.strip()
+        if not linha or linha.startswith('_'): continue
         
-        # Ignora linhas vazias ou separadores
-        if not linha or linha.startswith('_'):
-            continue
-            
-        # Identifica mudança de Evento (ex: "Evento: 37 Horas Extras 60%")
+        # Identifica Evento
         if linha.startswith('"Evento:'):
             evento_atual = linha.replace('"Evento:', '').replace('"', '').strip()
+            # Remove código do evento se houver (ex: "37 Horas Extras")
+            # Opcional: manter nome completo
             continue
             
-        # Ignora linhas de cabeçalho repetidas ou totais
         if "Total do Evento" in linha or "Total da Empresa" in linha or "Relação de Eventos" in linha:
             continue
             
         partes = linha.split(';')
         
-        # Validação simples: linhas de dados geralmente começam com um ID numérico (Func)
-        # e têm pelo menos 6 colunas baseadas no padrão visto
+        # Validação básica de linha de dados
         if len(partes) >= 6 and partes[0].replace('"', '').isdigit():
             try:
-                # Extração baseada na estrutura: Func;Nome;Cargo_ID;Cargo_Nome;Situação;Referência;Valor
-                # Ajustando indices conforme o CSV padrão fornecido
-                # O CSV parece ter aspas em tudo, então removemos
-                
                 func_id = partes[0].replace('"', '')
                 nome = partes[1].replace('"', '')
-                # As colunas de cargo as vezes vem separadas ou juntas, vamos pegar pelo indice reverso para garantir o valor
                 valor_raw = partes[-1].replace('"', '')
                 ref_raw = partes[-2].replace('"', '')
                 situacao = partes[-3].replace('"', '')
-                cargo_nome = partes[-4].replace('"', '') # Assumindo posição fixa
+                cargo_nome = partes[-4].replace('"', '')
                 
-                # Se cargo_nome for numérico, pegamos o anterior (ajuste fino)
+                # Ajuste se cargo for numérico (às vezes desloca)
                 if cargo_nome.replace('.','').isdigit():
-                     cargo_nome = partes[2].replace('"', '') # Fallback
+                     cargo_nome = partes[2].replace('"', '')
 
                 dados.append({
+                    'Empresa': empresa_atual,
+                    'Competência': competencia_atual,
                     'ID Func': func_id,
                     'Nome': nome,
                     'Cargo': cargo_nome,
@@ -104,129 +111,173 @@ def processar_csv_financeiro(uploaded_file):
                     'Horas Decimais': converter_horas(ref_raw),
                     'Valor (R$)': converter_valor_monetario(valor_raw),
                     'Tipo de Evento': evento_atual,
-                    'Arquivo Fonte': uploaded_file.name
+                    'Arquivo': uploaded_file.name
                 })
-            except Exception as e:
-                # Em caso de erro numa linha específica, logamos mas continuamos
-                print(f"Erro ao processar linha: {linha} | Erro: {e}")
+            except:
                 continue
 
     return pd.DataFrame(dados)
 
-# --- Interface de Upload ---
+# --- Título ---
+st.title("📊 Inteligência Financeira & Folha")
+st.markdown("Análise consolidada de relatórios de eventos (Ficha Financeira).")
+
+# --- Upload ---
 uploaded_files = st.file_uploader(
-    "Carregar CSVs (Relatórios de Eventos Acumulados)", 
+    "📂 Carregar Relatórios CSV (Multiselect disponível)", 
     type=["csv"], 
-    accept_multiple_files=True
+    accept_multiple_files=True,
+    help="Você pode selecionar arquivos de diferentes empresas ao mesmo tempo."
 )
 
 if uploaded_files:
     dfs = []
-    barra_progresso = st.progress(0, text="Processando arquivos...")
-    
-    for i, file in enumerate(uploaded_files):
-        df_temp = processar_csv_financeiro(file)
-        dfs.append(df_temp)
-        barra_progresso.progress((i + 1) / len(uploaded_files), text=f"Lendo {file.name}...")
-    
-    barra_progresso.empty()
+    for file in uploaded_files:
+        dfs.append(processar_csv_financeiro(file))
     
     if not dfs:
-        st.warning("Nenhum dado válido encontrado nos arquivos.")
+        st.stop()
+        
+    df_raw = pd.concat(dfs, ignore_index=True)
+    
+    if df_raw.empty:
+        st.warning("Nenhum dado extraído. Verifique o layout dos arquivos.")
         st.stop()
 
-    # Consolida todos os arquivos em um único DataFrame
-    df_completo = pd.concat(dfs, ignore_index=True)
+    # --- Sidebar de Filtros ---
+    with st.sidebar:
+        st.header("🔍 Filtros Globais")
+        
+        # Filtro de Empresa
+        empresas = sorted(df_raw['Empresa'].unique())
+        sel_empresas = st.multiselect("Filtrar Empresas", companies := empresas, default=companies)
+        
+        # Filtro de Competência
+        competencias = sorted(df_raw['Competência'].unique())
+        sel_competencias = st.multiselect("Filtrar Competência (Mês)", competencias, default=competencias)
+        
+        # Filtro de Cargo
+        cargos = sorted(df_raw['Cargo'].unique())
+        sel_cargos = st.multiselect("Filtrar Cargos", cargos, default=cargos)
+        
+        # Filtro de Evento
+        eventos = sorted(df_raw['Tipo de Evento'].unique())
+        sel_eventos = st.multiselect("Filtrar Eventos", eventos, default=eventos)
 
-    if df_completo.empty:
-        st.error("O arquivo foi lido, mas nenhuma linha de dados foi extraída. Verifique se o formato é compatível.")
-        st.stop()
-
-    st.success(f"Dados processados com sucesso! {len(df_completo)} registros carregados.")
-    st.divider()
-
-    # --- Filtros Interativos ---
-    col_filtro1, col_filtro2, col_filtro3 = st.columns(3)
-    
-    eventos_unicos = df_completo['Tipo de Evento'].unique()
-    cargos_unicos = df_completo['Cargo'].unique()
-    
-    filtro_evento = col_filtro1.multiselect("Filtrar por Evento", options=eventos_unicos, default=eventos_unicos)
-    filtro_cargo = col_filtro2.multiselect("Filtrar por Cargo", options=cargos_unicos, default=cargos_unicos)
-    
-    df_filtered = df_completo[
-        (df_completo['Tipo de Evento'].isin(filtro_evento)) &
-        (df_completo['Cargo'].isin(filtro_cargo))
+    # Aplicação dos Filtros
+    df = df_raw[
+        (df_raw['Empresa'].isin(sel_empresas)) &
+        (df_raw['Competência'].isin(sel_competencias)) &
+        (df_raw['Cargo'].isin(sel_cargos)) &
+        (df_raw['Tipo de Evento'].isin(sel_eventos))
     ]
 
-    # --- KPIs Estratégicos (Big Numbers) ---
-    st.subheader("Indicadores Gerais")
-    
-    total_valor = df_filtered['Valor (R$)'].sum()
-    total_horas = df_filtered['Horas Decimais'].sum()
-    total_funcionarios = df_filtered['ID Func'].nunique()
-    media_por_func = total_valor / total_funcionarios if total_funcionarios > 0 else 0
-    
-    # Tentativa de separar Hora Extra de DSR para KPI específico
-    valor_dsr = df_filtered[df_filtered['Tipo de Evento'].str.contains("DSR", na=False, case=False)]['Valor (R$)'].sum()
-    valor_he = total_valor - valor_dsr
+    if df.empty:
+        st.warning("Nenhum dado encontrado com os filtros selecionados.")
+        st.stop()
 
-    kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-    
-    kpi1.metric("Custo Total (R$)", f"R$ {total_valor:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-    kpi2.metric("Total de Horas", f"{total_horas:,.1f} h")
-    kpi3.metric("Funcionários Impactados", total_funcionarios)
-    kpi4.metric("Ticket Médio por Func.", f"R$ {media_por_func:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-
-    # --- Gráficos para Tomada de Decisão ---
+    # --- KPIs Principais ---
     st.divider()
-    st.subheader("Análise Gráfica")
+    col1, col2, col3, col4 = st.columns(4)
+    
+    total_custo = df['Valor (R$)'].sum()
+    total_horas = df['Horas Decimais'].sum()
+    qtd_func = df['ID Func'].nunique()
+    media_func = total_custo / qtd_func if qtd_func else 0
+    
+    col1.metric("💰 Custo Total", f"R$ {total_custo:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+    col2.metric("⏱️ Total Horas Pagas", f"{total_horas:,.0f}h")
+    col3.metric("👥 Colaboradores", qtd_func)
+    col4.metric("📊 Custo Médio / Colab.", f"R$ {media_func:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
 
-    tab1, tab2 = st.tabs(["💰 Ranking de Custos", "📊 Distribuição e Cargos"])
+    # --- Abas de Análise ---
+    st.divider()
+    tab_geral, tab_empresas, tab_inteligencia, tab_dados = st.tabs([
+        "🏢 Visão Geral", 
+        "🆚 Comparativo Empresas", 
+        "🧠 Inteligência & Anomalias",
+        "📄 Dados Brutos"
+    ])
 
-    with tab1:
-        st.markdown("**Top 10 Funcionários com Maior Custo (Soma de todos os eventos)**")
+    # --- 1. Visão Geral ---
+    with tab_geral:
+        c1, c2 = st.columns([2, 1])
         
-        # Agrupa por funcionário e soma os valores
-        df_ranking = df_filtered.groupby(['Nome', 'Cargo'])['Valor (R$)'].sum().reset_index()
-        df_ranking = df_ranking.sort_values(by='Valor (R$)', ascending=False).head(10)
-        
-        # Ajuste para exibição no gráfico nativo do Streamlit
-        st.bar_chart(
-            df_ranking,
-            x="Nome",
-            y="Valor (R$)",
-            color="Cargo",  # Colora por cargo para dar contexto visual
-            use_container_width=True
-        )
-
-    with tab2:
-        col_graf1, col_graf2 = st.columns(2)
-        
-        with col_graf1:
-            st.markdown("**Custo por Tipo de Evento**")
-            df_evento = df_filtered.groupby('Tipo de Evento')['Valor (R$)'].sum().reset_index()
-            st.bar_chart(df_evento, x="Tipo de Evento", y="Valor (R$)", use_container_width=True)
+        with c1:
+            st.subheader("Distribuição de Custos por Tipo de Evento")
+            fig_evento = px.bar(
+                df.groupby('Tipo de Evento')['Valor (R$)'].sum().reset_index(), 
+                x='Valor (R$)', y='Tipo de Evento', orientation='h',
+                text_auto='.2s', color='Valor (R$)', color_continuous_scale='Blues'
+            )
+            st.plotly_chart(fig_evento, use_container_width=True)
             
-        with col_graf2:
-            st.markdown("**Top 10 Cargos com Maior Custo Total**")
-            df_cargo = df_filtered.groupby('Cargo')['Valor (R$)'].sum().reset_index().sort_values(by='Valor (R$)', ascending=False).head(10)
-            st.bar_chart(df_cargo, x="Cargo", y="Valor (R$)", use_container_width=True, horizontal=True)
+        with c2:
+            st.subheader("Top 5 Cargos (Custo)")
+            df_cargo = df.groupby('Cargo')['Valor (R$)'].sum().reset_index().sort_values('Valor (R$)', ascending=False).head(5)
+            fig_cargo = px.pie(df_cargo, values='Valor (R$)', names='Cargo', hole=0.4)
+            st.plotly_chart(fig_cargo, use_container_width=True)
 
-    # --- Dados Detalhados (Tabela) ---
-    st.divider()
-    with st.expander("🔎 Visualizar Dados Brutos Detalhados", expanded=False):
-        # Formata colunas para exibição amigável
-        df_display = df_filtered.copy()
-        df_display['Valor (R$)'] = df_display['Valor (R$)'].apply(lambda x: f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-        df_display['Horas Decimais'] = df_display['Horas Decimais'].apply(lambda x: f"{x:.2f}")
+    # --- 2. Comparativo Empresas ---
+    with tab_empresas:
+        if len(sel_empresas) <= 1:
+            st.info("Selecione mais de uma empresa na barra lateral para ver o comparativo.")
         
+        col_comp1, col_comp2 = st.columns(2)
+        
+        with col_comp1:
+            st.markdown("### Custo Total por Empresa")
+            df_emp_total = df.groupby('Empresa')['Valor (R$)'].sum().reset_index()
+            fig_emp1 = px.bar(df_emp_total, x='Empresa', y='Valor (R$)', color='Empresa', text_auto='.2s')
+            st.plotly_chart(fig_emp1, use_container_width=True)
+            
+        with col_comp2:
+            st.markdown("### Média de Custo por Colaborador")
+            # Agrupa por empresa e conta funcionários únicos
+            df_emp_avg = df.groupby('Empresa').agg({'Valor (R$)': 'sum', 'ID Func': 'nunique'}).reset_index()
+            df_emp_avg['Média (R$)'] = df_emp_avg['Valor (R$)'] / df_emp_avg['ID Func']
+            
+            fig_emp2 = px.bar(df_emp_avg, x='Empresa', y='Média (R$)', color='Empresa', text_auto='.2f')
+            st.plotly_chart(fig_emp2, use_container_width=True)
+            
+        st.markdown("### Detalhamento por Evento e Empresa")
+        fig_heat = px.sunburst(df, path=['Empresa', 'Tipo de Evento'], values='Valor (R$)', color='Valor (R$)')
+        st.plotly_chart(fig_heat, use_container_width=True)
+
+    # --- 3. Inteligência & Anomalias ---
+    with tab_inteligencia:
+        st.markdown("### 🚨 Detecção de Horas Extras Excessivas")
+        
+        limite_horas = st.slider("Definir limite de alerta para horas (soma de todos eventos)", 50, 300, 100)
+        
+        df_func_horas = df.groupby(['Nome', 'Empresa', 'Cargo'])['Horas Decimais'].sum().reset_index()
+        outliers = df_func_horas[df_func_horas['Horas Decimais'] > limite_horas].sort_values('Horas Decimais', ascending=False)
+        
+        if not outliers.empty:
+            st.warning(f"Foram encontrados {len(outliers)} colaboradores com mais de {limite_horas} horas registradas no período.")
+            st.dataframe(
+                outliers.style.format({'Horas Decimais': '{:.2f}'}).background_gradient(cmap='Reds', subset=['Horas Decimais']),
+                use_container_width=True
+            )
+            
+            st.markdown("### 🏆 Ranking de Maiores Recebimentos (Valor Líquido Eventos)")
+            df_top_recebimento = df.groupby(['Nome', 'Empresa'])['Valor (R$)'].sum().reset_index().sort_values('Valor (R$)', ascending=False).head(10)
+            st.bar_chart(df_top_recebimento.set_index('Nome')['Valor (R$)'])
+            
+        else:
+            st.success(f"Nenhum colaborador ultrapassou o limite de {limite_horas} horas.")
+
+    # --- 4. Dados Brutos ---
+    with tab_dados:
         st.dataframe(
-            df_display[['Nome', 'Cargo', 'Tipo de Evento', 'Referência Original', 'Valor (R$)', 'Situação']],
+            df[['Empresa', 'Competência', 'Nome', 'Cargo', 'Tipo de Evento', 'Referência Original', 'Valor (R$)', 'Situação']],
             use_container_width=True,
             hide_index=True
         )
+        
+        csv = df.to_csv(index=False).encode('utf-8')
+        st.download_button("📥 Baixar CSV Filtrado", data=csv, file_name="analise_financeira_filtrada.csv", mime="text/csv")
 
 else:
-    # Estado inicial (sem arquivo)
-    st.info("Aguardando upload de arquivos CSV para iniciar a análise.")
+    # Tela inicial vazia
+    st.info("👆 Utilize o menu superior para carregar os arquivos CSV e iniciar a análise.")
