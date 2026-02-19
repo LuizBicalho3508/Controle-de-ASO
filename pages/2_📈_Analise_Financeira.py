@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import io
 import plotly.express as px
-import plotly.graph_objects as go
 
 # --- Configuração da Página ---
 st.set_page_config(page_title="Análise Financeira 360°", page_icon="📈", layout="wide")
@@ -54,17 +53,25 @@ def converter_horas(hora_str):
     except:
         return 0.0
 
+def formatar_horas_decimal_para_str(horas_decimal):
+    """Converte 1.5 para '01:30' para exibição visual"""
+    try:
+        horas = int(horas_decimal)
+        minutos = int((horas_decimal - horas) * 60)
+        return f"{horas:02d}:{minutos:02d}"
+    except:
+        return "00:00"
+
 def extrair_metadados(linhas):
     """
-    Busca inteligente por Empresa e Período nas primeiras 20 linhas,
-    ignorando linhas em branco ou cabeçalhos técnicos.
+    Busca inteligente por Empresa e Período nas primeiras linhas
     """
     empresa = "Empresa Desconhecida"
     competencia = "N/A"
     
     for linha in linhas[:20]:
         linha = linha.strip()
-        # Busca Nome da Empresa (geralmente tem formato 'CODE - NOME' e 'Pág:')
+        # Busca Nome da Empresa
         if " - " in linha and ";" in linha and ("Pág:" in linha or "Pag:" in linha):
             partes = linha.split(';')
             if len(partes) > 0:
@@ -77,7 +84,6 @@ def extrair_metadados(linhas):
         # Busca Período
         if "Período:" in linha or "Periodo:" in linha:
             try:
-                # Formato: "Período: 02/2026 à ..."
                 competencia = linha.split(':')[1].split('à')[0].replace('"', '').strip()
             except:
                 pass
@@ -87,7 +93,6 @@ def extrair_metadados(linhas):
 @st.cache_data(show_spinner=False)
 def processar_csv_financeiro(file_content, file_name):
     """Processa o conteúdo bruto do arquivo"""
-    # Tenta decodificar UTF-8, fallback para Latin-1
     try:
         decoded = file_content.decode("utf-8")
     except UnicodeDecodeError:
@@ -104,31 +109,24 @@ def processar_csv_financeiro(file_content, file_name):
     for linha in linhas:
         linha_clean = linha.strip()
         
-        # Pula linhas inúteis
         if not linha_clean or linha_clean.startswith('_') or "Total do Evento" in linha_clean or "Total da Empresa" in linha_clean:
             continue
             
-        # Detecta Novo Evento
         if linha_clean.startswith('"Evento:') or linha_clean.startswith('Evento:'):
             evento_atual = linha_clean.replace('"Evento:', '').replace('Evento:', '').replace('"', '').strip()
             continue
             
         partes = linha_clean.split(';')
         
-        # Lógica de extração de colunas (Func; Nome; Cargo; Situação; Ref; Valor)
         if len(partes) >= 6 and partes[0].replace('"', '').strip().isdigit():
             try:
                 func_id = partes[0].replace('"', '').strip()
                 nome = partes[1].replace('"', '').strip()
-                
-                # O valor é sempre o último, Ref o penúltimo
                 valor_raw = partes[-1].replace('"', '').strip()
                 ref_raw = partes[-2].replace('"', '').strip()
                 situacao = partes[-3].replace('"', '').strip()
-                
-                # Cargo as vezes varia a posição se tiver ID separado
                 cargo_nome = partes[-4].replace('"', '').strip()
-                # Ajuste: se cargo_nome for código (numérico), pega o anterior (índice 2)
+                
                 if cargo_nome.replace('.', '').isdigit():
                      cargo_nome = partes[2].replace('"', '').strip()
 
@@ -168,7 +166,6 @@ if uploaded_files:
     progresso = st.progress(0, text="Iniciando processamento...")
     
     for i, file in enumerate(uploaded_files):
-        # Lê bytes para passar para a função (compatível com cache)
         bytes_data = file.getvalue()
         df_temp = processar_csv_financeiro(bytes_data, file.name)
         dfs.append(df_temp)
@@ -190,19 +187,15 @@ if uploaded_files:
     with st.sidebar:
         st.header("🔍 Filtros")
         
-        # Filtro Empresa
         opts_empresa = sorted(df_raw['Empresa'].unique())
         sel_empresas = st.multiselect("Empresas", opts_empresa, default=opts_empresa)
         
-        # Filtro Competência
         opts_comp = sorted(df_raw['Competência'].unique())
         sel_comp = st.multiselect("Mês/Competência", opts_comp, default=opts_comp)
         
-        # Filtro Cargo
         opts_cargo = sorted(df_raw['Cargo'].unique())
         sel_cargos = st.multiselect("Cargos", opts_cargo, default=opts_cargo)
         
-        # Filtro Evento
         opts_evento = sorted(df_raw['Tipo de Evento'].unique())
         sel_eventos = st.multiselect("Eventos", opts_evento, default=opts_evento)
 
@@ -227,7 +220,7 @@ if uploaded_files:
     qtd_colab = df['ID Func'].nunique()
     media = total_custo / qtd_colab if qtd_colab else 0
     
-    col1.metric("💰 Custo Total Filtrado", f"R$ {total_custo:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+    col1.metric("💰 Custo Total", f"R$ {total_custo:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
     col2.metric("⏱️ Total Horas", f"{total_horas:,.1f} h")
     col3.metric("👥 Colaboradores", qtd_colab)
     col4.metric("📊 Ticket Médio", f"R$ {media:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
@@ -262,17 +255,12 @@ if uploaded_files:
     # 2. Comparativo
     with tab2:
         if len(sel_empresas) > 1:
-            st.markdown("#### Comparação Direta entre Empresas Selecionadas")
             col_comp1, col_comp2 = st.columns(2)
-            
             with col_comp1:
-                # Custo Total por Empresa
                 df_total_emp = df.groupby('Empresa')['Valor (R$)'].sum().reset_index()
                 fig_comp1 = px.bar(df_total_emp, x='Empresa', y='Valor (R$)', color='Empresa', title="Custo Total por Empresa", text_auto='.2s')
                 st.plotly_chart(fig_comp1, use_container_width=True)
-                
             with col_comp2:
-                # Média por Funcionário
                 df_avg = df.groupby('Empresa').agg({'Valor (R$)': 'sum', 'ID Func': 'nunique'}).reset_index()
                 df_avg['Media'] = df_avg['Valor (R$)'] / df_avg['ID Func']
                 fig_comp2 = px.bar(df_avg, x='Empresa', y='Media', color='Empresa', title="Custo Médio por Colaborador", text_auto='.2f')
@@ -283,49 +271,114 @@ if uploaded_files:
     # 3. Inteligência (Outliers)
     with tab3:
         st.markdown("### 🚨 Detecção de Anomalias")
-        st.caption("Identifique colaboradores com volume de horas ou valores muito acima da média.")
-        
         col_out1, col_out2 = st.columns([1, 3])
-        
         with col_out1:
-            limite_horas = st.number_input("Limite de Horas (Alerta)", value=100, step=10)
-            limite_valor = st.number_input("Limite de Valor (Alerta R$)", value=5000.0, step=500.0)
+            limite_horas = st.number_input("Limite de Horas", value=100, step=10)
+            limite_valor = st.number_input("Limite de Valor (R$)", value=5000.0, step=500.0)
             
         with col_out2:
-            # Agrupa por funcionário
             df_func = df.groupby(['Nome', 'Empresa', 'Cargo']).agg({
                 'Horas Decimais': 'sum',
                 'Valor (R$)': 'sum'
             }).reset_index()
-            
-            # Filtra outliers
             outliers = df_func[
                 (df_func['Horas Decimais'] > limite_horas) | 
                 (df_func['Valor (R$)'] > limite_valor)
             ].sort_values('Valor (R$)', ascending=False)
             
             if not outliers.empty:
-                st.warning(f"{len(outliers)} colaboradores encontrados acima dos limites definidos.")
-                
-                # Formatação para exibição
+                st.warning(f"{len(outliers)} colaboradores encontrados acima dos limites.")
                 outliers_display = outliers.copy()
                 outliers_display['Valor (R$)'] = outliers_display['Valor (R$)'].apply(lambda x: f"R$ {x:,.2f}")
                 outliers_display['Horas Decimais'] = outliers_display['Horas Decimais'].apply(lambda x: f"{x:.2f}")
-                
                 st.dataframe(outliers_display, use_container_width=True, hide_index=True)
             else:
-                st.success("Nenhum colaborador ultrapassou os limites configurados.")
+                st.success("Nenhum colaborador ultrapassou os limites.")
 
-    # 4. Dados Brutos
+    # 4. Dados Detalhados (COM A LÓGICA NOVA)
     with tab4:
-        st.dataframe(
-            df[['Empresa', 'Competência', 'ID Func', 'Nome', 'Cargo', 'Tipo de Evento', 'Referência Original', 'Valor (R$)']],
-            use_container_width=True,
-            hide_index=True
+        st.markdown("### 📑 Tabela Detalhada por Funcionário")
+        
+        # 1. Categorizar Eventos (60%, DSR ou Outros)
+        def categorizar_evento(evento):
+            evt = str(evento).upper()
+            if "60%" in evt: return "60%"
+            if "DSR" in evt: return "DSR"
+            return "OUTROS"
+            
+        df['Categoria_Temp'] = df['Tipo de Evento'].apply(categorizar_evento)
+        
+        # 2. Pivotar (Transformar linhas em colunas)
+        pivot_df = df.pivot_table(
+            index=['Empresa', 'Competência', 'ID Func', 'Nome', 'Cargo'],
+            columns='Categoria_Temp',
+            values=['Horas Decimais', 'Valor (R$)'],
+            aggfunc='sum',
+            fill_value=0
+        )
+        
+        # 3. Achatamento das colunas MultiIndex
+        pivot_df.columns = [f'{col[0]}|{col[1]}' for col in pivot_df.columns]
+        pivot_df = pivot_df.reset_index()
+        
+        # 4. Garantir que as colunas existam (caso não tenha nenhum DSR no filtro, por exemplo)
+        cols_esperadas = [
+            'Horas Decimais|60%', 'Valor (R$)|60%', 
+            'Horas Decimais|DSR', 'Valor (R$)|DSR'
+        ]
+        for col in cols_esperadas:
+            if col not in pivot_df.columns:
+                pivot_df[col] = 0.0
+
+        # 5. Criar Coluna Total Geral
+        pivot_df['Total Geral (R$)'] = pivot_df['Valor (R$)|60%'] + pivot_df['Valor (R$)|DSR']
+        
+        # Se houver categoria "OUTROS", somar também
+        if 'Valor (R$)|OUTROS' in pivot_df.columns:
+             pivot_df['Total Geral (R$)'] += pivot_df['Valor (R$)|OUTROS']
+
+        # 6. Renomear e Organizar para Exibição Final
+        df_final = pivot_df.copy()
+        
+        # Converter horas decimais para string HH:MM para a coluna visual (opcional, mas solicitado "Banco de Hora")
+        df_final['Banco de Hora 60%'] = df_final['Horas Decimais|60%'].apply(formatar_horas_decimal_para_str)
+        df_final['Horas DSR'] = df_final['Horas Decimais|DSR'].apply(formatar_horas_decimal_para_str)
+        
+        # Selecionar colunas finais
+        colunas_finais = [
+            'Empresa', 'Competência', 'Nome', 'Cargo',
+            'Banco de Hora 60%', 'Valor (R$)|60%',
+            'Horas DSR', 'Valor (R$)|DSR',
+            'Total Geral (R$)'
+        ]
+        
+        df_exibicao = df_final[colunas_finais].copy()
+        
+        # Renomear para ficar bonito no header
+        df_exibicao.columns = [
+            'Empresa', 'Competência', 'Nome', 'Cargo',
+            'Banco de Hora 60%', 'Valor 60% (R$)',
+            'Horas DSR', 'Valor DSR (R$)',
+            'Total Geral (R$)'
+        ]
+        
+        # Formatação de Moeda
+        colunas_valor = ['Valor 60% (R$)', 'Valor DSR (R$)', 'Total Geral (R$)']
+        for col in colunas_valor:
+            df_exibicao[col] = df_exibicao[col].apply(lambda x: f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+
+        st.dataframe(df_exibicao, use_container_width=True, hide_index=True)
+        
+        # Download
+        csv_buffer = df_exibicao.to_csv(index=False).encode('utf-8-sig')
+        st.download_button(
+            label="📥 Baixar Planilha Consolidada (Excel/CSV)",
+            data=csv_buffer,
+            file_name="relatorio_consolidado_folha.csv",
+            mime="text/csv"
         )
 
 else:
-    # Estado inicial (sem arquivos)
     st.info("Aguardando upload dos arquivos CSV...")
     st.markdown("""
         **Instruções:**
