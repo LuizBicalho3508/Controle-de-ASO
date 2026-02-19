@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import io
 import plotly.express as px
-import math
 from firebase_utils import db
 
 # --- CORREÇÃO DE IMPORTAÇÃO (FieldPath) ---
@@ -19,18 +18,20 @@ except ImportError:
             FieldPath = None
 
 # --- Configuração da Página ---
-st.set_page_config(page_title="Análise Financeira & Histórico", page_icon="📈", layout="wide")
+st.set_page_config(page_title="Análise Financeira", page_icon="📈", layout="wide")
 
 # --- Verificação de Login ---
 if not st.session_state.get("authentication_status"):
     st.error("Você precisa estar logado para acessar esta página.")
     st.stop()
 
-# --- INICIALIZAÇÃO DO STATE ---
+# --- STATE ---
 if 'df_financeiro' not in st.session_state:
     st.session_state['df_financeiro'] = pd.DataFrame()
 
-# --- FUNÇÕES AUXILIARES ---
+# --- FUNÇÕES UTILITÁRIAS (CACHE_DATA) ---
+# Otimização: Cache simples para funções puras
+@st.cache_data
 def converter_valor_monetario(valor_str):
     if pd.isna(valor_str): return 0.0
     try:
@@ -39,6 +40,7 @@ def converter_valor_monetario(valor_str):
     except:
         return 0.0
 
+@st.cache_data
 def converter_horas(hora_str):
     if pd.isna(hora_str): return 0.0
     try:
@@ -74,6 +76,7 @@ def extrair_metadados(linhas):
 
 @st.cache_data(show_spinner=False)
 def processar_csv_financeiro(file_content, file_name):
+    # Processamento pesado agora é cacheado baseado no conteúdo do arquivo
     try:
         decoded = file_content.decode("utf-8")
     except UnicodeDecodeError:
@@ -115,7 +118,7 @@ def processar_csv_financeiro(file_content, file_name):
             except: continue
     return pd.DataFrame(dados)
 
-# --- FUNÇÕES DE BANCO DE DADOS (DADOS) ---
+# --- FIRESTORE (COM CACHE) ---
 
 def salvar_no_firestore(df_para_salvar):
     collection_ref = db.collection('folha_eventos')
@@ -143,8 +146,11 @@ def salvar_no_firestore(df_para_salvar):
 
     if count > 0: batch.commit()
     progress_bar.empty()
+    # Limpa o cache de filtros para aparecerem as novas empresas/datas
+    carregar_filtros_disponiveis.clear()
     return total_ops
 
+@st.cache_data(ttl=3600) # Cache de 1 hora para lista de filtros (leve)
 def carregar_filtros_disponiveis():
     try:
         docs = db.collection('folha_eventos').select(['Empresa', 'Competência']).stream()
@@ -157,7 +163,7 @@ def carregar_filtros_disponiveis():
         if 'Competência' in d: competencias.add(d['Competência'])
     return sorted(list(empresas)), sorted(list(competencias))
 
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=600) # Cache de 10 min para os dados brutos
 def carregar_dados_do_banco(empresas_sel, competencias_sel):
     if not empresas_sel: return pd.DataFrame()
     registros = []
@@ -170,23 +176,52 @@ def carregar_dados_do_banco(empresas_sel, competencias_sel):
                 registros.append(d)
     return pd.DataFrame(registros)
 
-# --- FUNÇÕES DE MAPEAMENTO (CONFIGURAÇÃO) ---
+# --- CONFIGURAÇÕES (COM CACHE) ---
 
+@st.cache_data(ttl=300) # Cache para não bater no banco toda hora
 def carregar_mapa_cargos():
     doc = db.collection('parametros').document('mapeamento_areas').get()
     return doc.to_dict().get('mapa', {}) if doc.exists else {}
 
 def salvar_mapa_cargos(novo_mapa):
     db.collection('parametros').document('mapeamento_areas').set({'mapa': novo_mapa})
+    carregar_mapa_cargos.clear() # Limpa cache ao salvar
 
+@st.cache_data(ttl=300)
 def carregar_mapa_excecoes():
     doc = db.collection('parametros').document('mapeamento_excecoes').get()
     return doc.to_dict().get('mapa', {}) if doc.exists else {}
 
 def salvar_mapa_excecoes(novo_mapa):
     db.collection('parametros').document('mapeamento_excecoes').set({'mapa': novo_mapa})
+    carregar_mapa_excecoes.clear() # Limpa cache ao salvar
 
-# --- INTERFACE PRINCIPAL ---
+# --- OTIMIZAÇÃO: APLICAÇÃO DE ÁREAS VETORIZADA ---
+def aplicar_areas_otimizado(df, mapa_cargos, mapa_excecoes):
+    """
+    Substitui o apply(axis=1) que é lento por operações vetorizadas do Pandas (map/combine_first).
+    Muito mais rápido para grandes volumes de dados.
+    """
+    if df.empty: return df
+    
+    df_out = df.copy()
+    
+    # 1. Aplica regra geral (Cargo)
+    df_out['Area'] = df_out['Cargo'].map(mapa_cargos)
+    
+    # 2. Aplica exceções (Pessoas)
+    # Cria uma série temporária com as exceções
+    excecoes_series = df_out['Nome'].map(mapa_excecoes)
+    
+    # 3. Combina: Se tiver exceção usa ela, senão usa a do cargo
+    df_out['Area'] = excecoes_series.combine_first(df_out['Area'])
+    
+    # 4. Preenche vazios
+    df_out['Area'] = df_out['Area'].fillna('Não Definido')
+    
+    return df_out
+
+# --- INTERFACE ---
 
 try:
     st.sidebar.image("logobd.png", width=300)
@@ -205,11 +240,7 @@ with tab_dashboard:
     if modo_uso == "🗄️ Consultar Banco de Dados":
         st.subheader("Consulta Histórica")
         with st.spinner("Carregando opções..."):
-            try:
-                opcoes_empresas, opcoes_competencias = carregar_filtros_disponiveis()
-            except Exception as e:
-                st.error(f"Erro BD: {e}")
-                opcoes_empresas, opcoes_competencias = [], []
+            opcoes_empresas, opcoes_competencias = carregar_filtros_disponiveis()
         
         with st.sidebar:
             st.divider()
@@ -244,21 +275,17 @@ with tab_dashboard:
                         salvar_no_firestore(df_temp)
                         st.success("Salvo!")
 
+    # Renderização (Usa dados da memória)
     if 'df_financeiro' in st.session_state and not st.session_state['df_financeiro'].empty:
-        df_full = st.session_state['df_financeiro'].copy()
         
-        # --- APLICAÇÃO DAS ÁREAS ---
+        # Carrega configurações (Cacheado)
         mapa_cargos = carregar_mapa_cargos()
         mapa_excecoes = carregar_mapa_excecoes()
         
-        def definir_area(row):
-            if row['Nome'] in mapa_excecoes and mapa_excecoes[row['Nome']]:
-                return mapa_excecoes[row['Nome']]
-            return mapa_cargos.get(row['Cargo'], 'Não Definido')
-            
-        df_full['Area'] = df_full.apply(definir_area, axis=1)
+        # Aplica Áreas (Otimizado)
+        df_full = aplicar_areas_otimizado(st.session_state['df_financeiro'], mapa_cargos, mapa_excecoes)
         
-        # Salva o DF com Areas no state para usar na Aba de Cenários também
+        # Salva state com áreas
         st.session_state['df_com_areas'] = df_full
 
         st.divider()
@@ -267,18 +294,19 @@ with tab_dashboard:
             areas_disp = sorted(df_full['Area'].unique())
             sel_areas = f_col1.multiselect("Filtrar Áreas", areas_disp, default=areas_disp)
             
-            df_area_filtered = df_full[df_full['Area'].isin(sel_areas)]
+            # Filtra cargos baseado na área selecionada para não poluir
+            df_area_filtered = df_full[df_full['Area'].isin(sel_areas)] if sel_areas else df_full
             cargos_disp = sorted(df_area_filtered['Cargo'].unique())
             sel_cargos = f_col2.multiselect("Filtrar Cargos", cargos_disp, default=cargos_disp)
             
             eventos_disp = sorted(df_full['Tipo de Evento'].unique())
             sel_eventos = f_col3.multiselect("Filtrar Eventos", eventos_disp, default=eventos_disp)
 
-        df = df_full[
-            (df_full['Area'].isin(sel_areas)) &
-            (df_full['Cargo'].isin(sel_cargos)) &
-            (df_full['Tipo de Evento'].isin(sel_eventos))
-        ]
+        # Filtro final
+        df = df_full.copy()
+        if sel_areas: df = df[df['Area'].isin(sel_areas)]
+        if sel_cargos: df = df[df['Cargo'].isin(sel_cargos)]
+        if sel_eventos: df = df[df['Tipo de Evento'].isin(sel_eventos)]
 
         if df.empty:
             st.warning("Sem dados para os filtros selecionados.")
@@ -309,11 +337,16 @@ with tab_dashboard:
                     fig_emp = px.pie(df_emp, values='Valor (R$)', names='Empresa', hole=0.4)
                     st.plotly_chart(fig_emp, use_container_width=True)
                 
-                fig_sun = px.sunburst(df, path=['Area', 'Cargo', 'Tipo de Evento'], values='Valor (R$)', color='Valor (R$)')
-                st.plotly_chart(fig_sun, use_container_width=True)
+                # Sunburst pode ser pesado com muitos dados, limitar se necessário
+                if len(df) < 5000:
+                    fig_sun = px.sunburst(df, path=['Area', 'Cargo', 'Tipo de Evento'], values='Valor (R$)', color='Valor (R$)')
+                    st.plotly_chart(fig_sun, use_container_width=True)
+                else:
+                    st.info("Gráfico de detalhamento oculto devido ao alto volume de dados (performance).")
 
             with subtab2:
                 limite_horas = st.number_input("Alerta Horas >", value=100)
+                # Agrupamento otimizado
                 df_out = df.groupby(['Nome', 'Empresa', 'Area', 'Cargo'])['Horas Decimais'].sum().reset_index()
                 outliers = df_out[df_out['Horas Decimais'] > limite_horas].sort_values('Horas Decimais', ascending=False)
                 if not outliers.empty:
@@ -329,49 +362,50 @@ with tab_dashboard:
                     if "DSR" in e: return "DSR"
                     return "OUTROS"
                 df['Cat'] = df['Tipo de Evento'].apply(cat_evento)
+                
                 pivot = df.pivot_table(index=['Empresa', 'Area', 'Nome', 'Cargo'], columns='Cat', values=['Horas Decimais', 'Valor (R$)'], aggfunc='sum', fill_value=0)
                 pivot.columns = [f'{c[0]}|{c[1]}' for c in pivot.columns]
                 pivot = pivot.reset_index()
+                
+                # Garante colunas
                 for c in ['Valor (R$)|60%', 'Valor (R$)|DSR', 'Horas Decimais|60%', 'Horas Decimais|DSR']:
                     if c not in pivot.columns: pivot[c] = 0.0
+                    
                 pivot['Total (R$)'] = pivot['Valor (R$)|60%'] + pivot['Valor (R$)|DSR']
                 if 'Valor (R$)|OUTROS' in pivot.columns: pivot['Total (R$)'] += pivot['Valor (R$)|OUTROS']
+                
                 final = pivot.copy()
                 final['Banco 60%'] = final['Horas Decimais|60%'].apply(formatar_horas_decimal_para_str)
                 final['Horas DSR'] = final['Horas Decimais|DSR'].apply(formatar_horas_decimal_para_str)
+                
                 cols_show = ['Empresa', 'Area', 'Nome', 'Cargo', 'Banco 60%', 'Valor (R$)|60%', 'Horas DSR', 'Valor (R$)|DSR', 'Total (R$)']
                 cols_show = [c for c in cols_show if c in final.columns]
                 st.dataframe(final[cols_show].style.format({"Valor (R$)|60%": "R$ {:,.2f}", "Valor (R$)|DSR": "R$ {:,.2f}", "Total (R$)": "R$ {:,.2f}"}), use_container_width=True)
 
 # ==============================================================================
-# ABA 2: SIMULAÇÃO DE CENÁRIOS (NOVO)
+# ABA 2: CENÁRIOS
 # ==============================================================================
 with tab_cenarios:
     st.header("🔮 Simulador de Compensação & Pagamentos")
-    st.markdown("Crie cenários estratégicos para zerar o banco de horas, definindo quem recebe em dinheiro e quem compensa com folgas.")
 
     if 'df_com_areas' not in st.session_state:
-        st.info("⚠️ Por favor, carregue os dados na aba 'Dashboard Analítico' primeiro.")
+        st.info("⚠️ Carregue os dados na aba 'Dashboard Analítico' primeiro.")
     else:
         df_base = st.session_state['df_com_areas'].copy()
 
-        # --- 1. CONFIGURAÇÃO DO CENÁRIO ---
         with st.container(border=True):
             st.subheader("1. Definição das Regras")
             col_s1, col_s2, col_s3 = st.columns(3)
             
             with col_s1:
                 st.markdown("**🎯 Público Alvo**")
-                # Filtro de Área para Simulação
                 areas_sim = sorted(df_base['Area'].unique())
                 area_target = st.multiselect("Aplicar em quais Áreas?", areas_sim, default=areas_sim, key="sim_area")
-                
-                # Filtro de Saldo
-                threshold_horas = st.number_input("Considerar APENAS quem tem Saldo > X horas:", min_value=0, value=40, step=10, help="Filtra funcionários com saldo acumulado acima deste valor.")
+                threshold_horas = st.number_input("Considerar Saldo > X horas:", min_value=0, value=40, step=10)
             
             with col_s2:
                 st.markdown("**💸 Pagamento em Dinheiro**")
-                perc_cash = st.slider("Percentual a PAGAR (%):", 0, 100, 50, help="Quanto das horas totais será pago em dinheiro?")
+                perc_cash = st.slider("Percentual a PAGAR (%):", 0, 100, 50)
                 meses_cash = st.number_input("Parcelar Pagamento em (meses):", 1, 24, 3)
 
             with col_s3:
@@ -380,38 +414,31 @@ with tab_cenarios:
                 st.info(f"Percentual a COMPENSAR: **{perc_folga}%**")
                 meses_folga = st.number_input("Diluir Folgas em (meses):", 1, 24, 6)
 
-        # --- 2. CÁLCULO ---
-        # Agrupa por funcionário primeiro (somando eventos 60% e DSR se houver horas)
-        # Nota: O valor financeiro já está nos dados. As horas também.
+        # Cálculo Otimizado
         df_agg = df_base.groupby(['Nome', 'Empresa', 'Area', 'Cargo']).agg({
             'Horas Decimais': 'sum',
             'Valor (R$)': 'sum'
         }).reset_index()
 
-        # Filtra pelo Threshold e Área
         df_target = df_agg[
             (df_agg['Horas Decimais'] >= threshold_horas) & 
             (df_agg['Area'].isin(area_target))
         ].copy()
 
         if df_target.empty:
-            st.warning(f"Nenhum colaborador encontrado com saldo acima de {threshold_horas} horas nas áreas selecionadas.")
+            st.warning(f"Nenhum colaborador encontrado com os filtros acima.")
         else:
-            # Aplica Regras
             df_target['Horas p/ Pagar'] = df_target['Horas Decimais'] * (perc_cash / 100)
             df_target['Valor p/ Pagar Total'] = df_target['Valor (R$)'] * (perc_cash / 100)
             df_target['Mensalidade Cash (R$)'] = df_target['Valor p/ Pagar Total'] / meses_cash
             
             df_target['Horas p/ Folgar'] = df_target['Horas Decimais'] * (perc_folga / 100)
-            # Assume dia de trabalho de 8h para calcular dias
             df_target['Dias de Folga Total'] = df_target['Horas p/ Folgar'] / 8
             df_target['Dias Folga/Mês'] = df_target['Dias de Folga Total'] / meses_folga
 
-            # --- 3. RESULTADOS ---
             st.divider()
             st.subheader("2. Resultado da Simulação")
             
-            # Big Numbers
             tot_cash = df_target['Valor p/ Pagar Total'].sum()
             tot_dias = df_target['Dias de Folga Total'].sum()
             qtd_pessoas = len(df_target)
@@ -422,12 +449,8 @@ with tab_cenarios:
             m3.metric("Total Dias de Folga", f"{tot_dias:,.1f} dias")
             m4.metric("Colaboradores Afetados", qtd_pessoas)
 
-            # Gráficos de Projeção
             col_g1, col_g2 = st.columns(2)
-            
             with col_g1:
-                st.markdown("**Fluxo de Pagamento Projetado**")
-                # Cria dados para gráfico de barras (Mês 1 a N)
                 proj_cash = pd.DataFrame({
                     'Mês': [f'Mês {i+1}' for i in range(meses_cash)],
                     'Valor (R$)': [tot_cash/meses_cash] * meses_cash
@@ -436,7 +459,6 @@ with tab_cenarios:
                 st.plotly_chart(fig_proj1, use_container_width=True)
 
             with col_g2:
-                st.markdown("**Impacto Operacional (Folgas)**")
                 proj_folga = pd.DataFrame({
                     'Mês': [f'Mês {i+1}' for i in range(meses_folga)],
                     'Dias Off da Equipe': [tot_dias/meses_folga] * meses_folga
@@ -444,14 +466,9 @@ with tab_cenarios:
                 fig_proj2 = px.bar(proj_folga, x='Mês', y='Dias Off da Equipe', text_auto='.1f', title=f"Diluição em {meses_folga} meses", color_discrete_sequence=['orange'])
                 st.plotly_chart(fig_proj2, use_container_width=True)
 
-            # Tabela Detalhada
             st.markdown("### 📋 Detalhamento Individual")
-            st.caption("Valores estimados baseados no custo atual da hora extra.")
-            
             df_show = df_target[['Nome', 'Empresa', 'Area', 'Horas Decimais', 'Valor p/ Pagar Total', 'Mensalidade Cash (R$)', 'Dias de Folga Total', 'Dias Folga/Mês']].copy()
             df_show = df_show.sort_values('Valor p/ Pagar Total', ascending=False)
-            
-            # Formatação
             df_show['Horas Totais'] = df_show['Horas Decimais'].apply(formatar_horas_decimal_para_str)
             
             st.dataframe(
@@ -464,7 +481,6 @@ with tab_cenarios:
                 use_container_width=True
             )
 
-
 # ==============================================================================
 # ABA 3: CONFIGURAÇÃO DE ÁREAS
 # ==============================================================================
@@ -474,6 +490,8 @@ with tab_config:
 
     with c_config1:
         st.subheader("1. Regra Geral (Por Cargo)")
+        
+        # Carrega dados com cache
         mapa_cargos = carregar_mapa_cargos()
         
         if 'df_financeiro' in st.session_state:
