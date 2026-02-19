@@ -5,3 +5,4 @@ firebase-admin
 requests
 openpyxl
 plotly
+google-cloud-firestore
