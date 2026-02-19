@@ -2,38 +2,20 @@ import streamlit as st
 import pandas as pd
 import io
 import plotly.express as px
+from firebase_utils import db  # Importando sua conexão existente
+from google.cloud.firestore import Client
 
 # --- Configuração da Página ---
-st.set_page_config(page_title="Análise Financeira 360°", page_icon="📈", layout="wide")
-
-# --- Estilos CSS ---
-st.markdown("""
-    <style>
-    .metric-card {
-        background-color: #f8f9fa;
-        padding: 15px;
-        border-radius: 10px;
-        border: 1px solid #e9ecef;
-        text-align: center;
-    }
-    </style>
-""", unsafe_allow_html=True)
+st.set_page_config(page_title="Análise Financeira & Histórico", page_icon="📈", layout="wide")
 
 # --- Verificação de Login ---
 if not st.session_state.get("authentication_status"):
     st.error("Você precisa estar logado para acessar esta página.")
     st.stop()
 
-# --- Tenta carregar Logo ---
-try:
-    st.logo("logobd.png")
-except:
-    pass
-
-# --- Funções de Tratamento de Dados ---
+# --- Funções Auxiliares (Conversão e Tratamento) ---
 
 def converter_valor_monetario(valor_str):
-    """Converte '1.234,56' para float 1234.56"""
     if pd.isna(valor_str): return 0.0
     try:
         limpo = str(valor_str).replace('.', '').replace(',', '.')
@@ -42,19 +24,15 @@ def converter_valor_monetario(valor_str):
         return 0.0
 
 def converter_horas(hora_str):
-    """Converte '123:30 hs' para horas decimais"""
     if pd.isna(hora_str): return 0.0
     try:
         limpo = str(hora_str).lower().replace('hs', '').strip()
         partes = limpo.split(':')
-        horas = int(partes[0])
-        minutos = int(partes[1])
-        return horas + (minutos / 60)
+        return int(partes[0]) + (int(partes[1]) / 60)
     except:
         return 0.0
 
 def formatar_horas_decimal_para_str(horas_decimal):
-    """Converte 1.5 para '01:30' para exibição visual"""
     try:
         horas = int(horas_decimal)
         minutos = int((horas_decimal - horas) * 60)
@@ -63,36 +41,23 @@ def formatar_horas_decimal_para_str(horas_decimal):
         return "00:00"
 
 def extrair_metadados(linhas):
-    """
-    Busca inteligente por Empresa e Período nas primeiras linhas
-    """
     empresa = "Empresa Desconhecida"
     competencia = "N/A"
-    
     for linha in linhas[:20]:
         linha = linha.strip()
-        # Busca Nome da Empresa
         if " - " in linha and ";" in linha and ("Pág:" in linha or "Pag:" in linha):
             partes = linha.split(';')
             if len(partes) > 0:
                 raw_emp = partes[0].replace('"', '').strip()
-                if " - " in raw_emp:
-                    empresa = raw_emp.split(" - ", 1)[1]
-                else:
-                    empresa = raw_emp
-        
-        # Busca Período
-        if "Período:" in linha or "Periodo:" in linha:
+                empresa = raw_emp.split(" - ", 1)[1] if " - " in raw_emp else raw_emp
+        if "Período:" in linha:
             try:
                 competencia = linha.split(':')[1].split('à')[0].replace('"', '').strip()
-            except:
-                pass
-                
+            except: pass
     return empresa, competencia
 
 @st.cache_data(show_spinner=False)
 def processar_csv_financeiro(file_content, file_name):
-    """Processa o conteúdo bruto do arquivo"""
     try:
         decoded = file_content.decode("utf-8")
     except UnicodeDecodeError:
@@ -100,7 +65,6 @@ def processar_csv_financeiro(file_content, file_name):
         
     stringio = io.StringIO(decoded)
     linhas = stringio.readlines()
-    
     empresa_atual, competencia_atual = extrair_metadados(linhas)
     
     dados = []
@@ -108,281 +72,285 @@ def processar_csv_financeiro(file_content, file_name):
     
     for linha in linhas:
         linha_clean = linha.strip()
+        if not linha_clean or linha_clean.startswith('_') or "Total" in linha_clean: continue
         
-        if not linha_clean or linha_clean.startswith('_') or "Total do Evento" in linha_clean or "Total da Empresa" in linha_clean:
-            continue
-            
         if linha_clean.startswith('"Evento:') or linha_clean.startswith('Evento:'):
             evento_atual = linha_clean.replace('"Evento:', '').replace('Evento:', '').replace('"', '').strip()
             continue
             
         partes = linha_clean.split(';')
-        
         if len(partes) >= 6 and partes[0].replace('"', '').strip().isdigit():
             try:
-                func_id = partes[0].replace('"', '').strip()
-                nome = partes[1].replace('"', '').strip()
-                valor_raw = partes[-1].replace('"', '').strip()
-                ref_raw = partes[-2].replace('"', '').strip()
-                situacao = partes[-3].replace('"', '').strip()
                 cargo_nome = partes[-4].replace('"', '').strip()
-                
-                if cargo_nome.replace('.', '').isdigit():
-                     cargo_nome = partes[2].replace('"', '').strip()
+                if cargo_nome.replace('.', '').isdigit(): cargo_nome = partes[2].replace('"', '').strip()
 
                 dados.append({
                     'Empresa': empresa_atual,
                     'Competência': competencia_atual,
-                    'ID Func': func_id,
-                    'Nome': nome,
+                    'ID Func': partes[0].replace('"', '').strip(),
+                    'Nome': partes[1].replace('"', '').strip(),
                     'Cargo': cargo_nome,
-                    'Situação': situacao,
-                    'Referência Original': ref_raw,
-                    'Horas Decimais': converter_horas(ref_raw),
-                    'Valor (R$)': converter_valor_monetario(valor_raw),
+                    'Referência Original': partes[-2].replace('"', '').strip(),
+                    'Horas Decimais': converter_horas(partes[-2].replace('"', '').strip()),
+                    'Valor (R$)': converter_valor_monetario(partes[-1].replace('"', '').strip()),
                     'Tipo de Evento': evento_atual,
                     'Arquivo': file_name
                 })
-            except Exception:
-                continue
-
+            except: continue
     return pd.DataFrame(dados)
+
+# --- Funções de Banco de Dados (Firestore) ---
+
+def salvar_no_firestore(df_para_salvar):
+    """Salva o DataFrame no Firestore em Lotes (Batches)"""
+    collection_ref = db.collection('folha_eventos')
+    batch = db.batch()
+    count = 0
+    total_ops = 0
+    
+    progress_bar = st.progress(0, text="Iniciando gravação no banco...")
+    total_linhas = len(df_para_salvar)
+
+    for index, row in df_para_salvar.iterrows():
+        # Cria um ID ÚNICO para evitar duplicatas: Empresa + Competencia + ID Func + Evento
+        # Remove caracteres especiais do ID para evitar erros
+        evento_safe = "".join(c for c in row['Tipo de Evento'] if c.isalnum())
+        doc_id = f"{row['Empresa']}_{row['Competência'].replace('/', '-')}_{row['ID Func']}_{evento_safe}"
+        
+        doc_ref = collection_ref.document(doc_id)
+        
+        # Converte dados para dict nativo do Python
+        dados_row = row.to_dict()
+        batch.set(doc_ref, dados_row)
+        
+        count += 1
+        total_ops += 1
+        
+        # Firestore limita batch a 500 operações
+        if count >= 400:
+            batch.commit()
+            batch = db.batch() # Reinicia batch
+            count = 0
+            progress_bar.progress(min(total_ops / total_linhas, 1.0), text=f"Salvando registro {total_ops} de {total_linhas}...")
+
+    if count > 0:
+        batch.commit()
+        
+    progress_bar.empty()
+    return total_ops
+
+def carregar_filtros_disponiveis():
+    """Busca apenas as empresas e competências disponíveis para preencher os filtros sem baixar tudo"""
+    # Nota: Em Firestore puro, "select distinct" é difícil. 
+    # Idealmente teríamos uma coleção auxiliar 'metadados_folha', mas vamos fazer uma query otimizada aqui.
+    # Para simplificar e não onerar leitura, vamos pegar todos (se base for pequena) ou limitar.
+    # SUGESTÃO: Criar coleção separada de 'Competencias' no futuro.
+    
+    # Busca limitada para preencher filtros (pode ser otimizado depois)
+    docs = db.collection('folha_eventos').select(['Empresa', 'Competência']).stream()
+    empresas = set()
+    competencias = set()
+    
+    for doc in docs:
+        d = doc.to_dict()
+        if 'Empresa' in d: empresas.add(d['Empresa'])
+        if 'Competência' in d: competencias.add(d['Competência'])
+        
+    return sorted(list(empresas)), sorted(list(competencias))
+
+@st.cache_data(ttl=300) # Cache de 5 min
+def carregar_dados_do_banco(empresas_sel, competencias_sel):
+    """Carrega dados filtrados do banco"""
+    if not empresas_sel or not competencias_sel:
+        return pd.DataFrame()
+        
+    # Firestore não aceita filtro 'in' com mais de 10 itens ou múltiplos arrays.
+    # Vamos fazer a query por empresa e filtrar competência no pandas se necessário, ou vice-versa.
+    
+    registros = []
+    # Loop para contornar limitação do Firestore se tiver muitas empresas selecionadas
+    collection = db.collection('folha_eventos')
+    
+    # Query otimizada: Buscar por empresa (campo indexado)
+    for emp in empresas_sel:
+        query = collection.where('Empresa', '==', emp).where('Competência', 'in', competencias_sel).stream()
+        for doc in query:
+            registros.append(doc.to_dict())
+            
+    return pd.DataFrame(registros)
+
 
 # --- Interface Principal ---
 
-st.title("📊 Inteligência Financeira & Folha")
-st.markdown("Dashboard analítico para consolidação de relatórios de múltiplos CNPJs.")
+st.sidebar.image("logobd.png", use_container_width=True) if "logobd.png" in "logobd.png" else None
+st.title("📊 Análise Financeira & Folha")
 
-# Upload
-uploaded_files = st.file_uploader(
-    "Carregar Relatórios CSV (Ficha Financeira)", 
-    type=["csv"], 
-    accept_multiple_files=True,
-    help="Selecione um ou múltiplos arquivos de diferentes empresas."
-)
+# --- Seletor de Modo ---
+modo_uso = st.sidebar.radio("Fonte de Dados:", ["📂 Fazer Upload (Novos Dados)", "🗄️ Consultar Banco de Dados"])
 
-if uploaded_files:
-    dfs = []
-    progresso = st.progress(0, text="Iniciando processamento...")
+df_trabalho = pd.DataFrame()
+
+# ==============================================================================
+# MODO 1: UPLOAD (LER CSV E SALVAR)
+# ==============================================================================
+if modo_uso == "📂 Fazer Upload (Novos Dados)":
+    st.subheader("Importação de Arquivos da Folha")
+    uploaded_files = st.file_uploader("Carregar CSVs", type=["csv"], accept_multiple_files=True)
     
-    for i, file in enumerate(uploaded_files):
-        bytes_data = file.getvalue()
-        df_temp = processar_csv_financeiro(bytes_data, file.name)
-        dfs.append(df_temp)
-        progresso.progress((i + 1) / len(uploaded_files), text=f"Lendo {file.name}...")
-    
-    progresso.empty()
-    
-    if not dfs:
-        st.error("Nenhum arquivo processado.")
-        st.stop()
+    if uploaded_files:
+        dfs = []
+        for file in uploaded_files:
+            dfs.append(processar_csv_financeiro(file.getvalue(), file.name))
         
-    df_raw = pd.concat(dfs, ignore_index=True)
-    
-    if df_raw.empty:
-        st.warning("Nenhum dado válido encontrado. Verifique o layout dos arquivos.")
-        st.stop()
+        if dfs:
+            df_trabalho = pd.concat(dfs, ignore_index=True)
+            
+            if not df_trabalho.empty:
+                st.success(f"{len(df_trabalho)} registros processados prontos para análise ou salvamento.")
+                
+                # --- Botão de Salvar ---
+                col_save1, col_save2 = st.columns([2, 1])
+                with col_save1:
+                    st.info("💡 Verifique os dados abaixo. Se estiver tudo certo, clique em Salvar para gravar no histórico.")
+                with col_save2:
+                    if st.button("💾 SALVAR NO BANCO DE DADOS", type="primary"):
+                        try:
+                            qtd = salvar_no_firestore(df_trabalho)
+                            st.balloons()
+                            st.success(f"Sucesso! {qtd} registros foram gravados/atualizados no banco de dados.")
+                        except Exception as e:
+                            st.error(f"Erro ao salvar no banco: {e}")
+            else:
+                st.warning("Arquivos vazios ou formato inválido.")
 
-    # --- Sidebar: Filtros Globais ---
+# ==============================================================================
+# MODO 2: CONSULTA (LER DO FIRESTORE)
+# ==============================================================================
+else:
+    st.subheader("Consulta Histórica")
+    
+    # Carregar filtros
+    with st.spinner("Carregando opções de filtro..."):
+        try:
+            opcoes_empresas, opcoes_competencias = carregar_filtros_disponiveis()
+        except Exception as e:
+            st.error(f"Erro ao conectar no banco: {e}")
+            opcoes_empresas, opcoes_competencias = [], []
+    
+    # Sidebar Filtros de Banco
     with st.sidebar:
-        st.header("🔍 Filtros")
-        
-        opts_empresa = sorted(df_raw['Empresa'].unique())
-        sel_empresas = st.multiselect("Empresas", opts_empresa, default=opts_empresa)
-        
-        opts_comp = sorted(df_raw['Competência'].unique())
-        sel_comp = st.multiselect("Mês/Competência", opts_comp, default=opts_comp)
-        
-        opts_cargo = sorted(df_raw['Cargo'].unique())
-        sel_cargos = st.multiselect("Cargos", opts_cargo, default=opts_cargo)
-        
-        opts_evento = sorted(df_raw['Tipo de Evento'].unique())
-        sel_eventos = st.multiselect("Eventos", opts_evento, default=opts_evento)
+        st.divider()
+        st.header("Filtros do Banco")
+        filtro_empresa_db = st.multiselect("Empresas", opcoes_empresas, default=opcoes_empresas)
+        filtro_competencia_db = st.multiselect("Competências", opcoes_competencias, default=[opcoes_competencias[-1]] if opcoes_competencias else [])
 
-    # Aplica Filtros
-    df = df_raw[
-        (df_raw['Empresa'].isin(sel_empresas)) &
-        (df_raw['Competência'].isin(sel_comp)) &
-        (df_raw['Cargo'].isin(sel_cargos)) &
-        (df_raw['Tipo de Evento'].isin(sel_eventos))
+    if st.button("🔍 Buscar Dados"):
+        if not filtro_empresa_db or not filtro_competencia_db:
+            st.warning("Selecione pelo menos uma Empresa e uma Competência.")
+        else:
+            with st.spinner("Baixando dados do nuvem..."):
+                df_trabalho = carregar_dados_do_banco(filtro_empresa_db, filtro_competencia_db)
+                if df_trabalho.empty:
+                    st.warning("Nenhum dado encontrado para os filtros selecionados.")
+                else:
+                    st.toast(f"{len(df_trabalho)} registros carregados!", icon="✅")
+
+# ==============================================================================
+# DASHBOARD (COMUM AOS DOIS MODOS)
+# ==============================================================================
+
+if not df_trabalho.empty:
+    st.divider()
+    
+    # --- Filtros Locais (Pós-carregamento) ---
+    with st.expander("🔎 Refinar Visualização (Filtros Locais)", expanded=False):
+        col_f1, col_f2 = st.columns(2)
+        cargos_disp = sorted(df_trabalho['Cargo'].unique())
+        eventos_disp = sorted(df_trabalho['Tipo de Evento'].unique())
+        
+        sel_cargos = col_f1.multiselect("Filtrar Cargos", cargos_disp, default=cargos_disp)
+        sel_eventos = col_f2.multiselect("Filtrar Eventos", eventos_disp, default=eventos_disp)
+    
+    # Aplica filtros locais
+    df = df_trabalho[
+        (df_trabalho['Cargo'].isin(sel_cargos)) &
+        (df_trabalho['Tipo de Evento'].isin(sel_eventos))
     ]
     
-    if df.empty:
-        st.info("Nenhum dado para exibir com os filtros atuais.")
-        st.stop()
-
     # --- KPIs ---
-    st.divider()
-    col1, col2, col3, col4 = st.columns(4)
-    
     total_custo = df['Valor (R$)'].sum()
     total_horas = df['Horas Decimais'].sum()
     qtd_colab = df['ID Func'].nunique()
     media = total_custo / qtd_colab if qtd_colab else 0
-    
-    col1.metric("💰 Custo Total", f"R$ {total_custo:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-    col2.metric("⏱️ Total Horas", f"{total_horas:,.1f} h")
-    col3.metric("👥 Colaboradores", qtd_colab)
-    col4.metric("📊 Ticket Médio", f"R$ {media:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
 
-    # --- Abas Estratégicas ---
-    st.divider()
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "🏢 Visão Geral", 
-        "🆚 Comparativo CNPJ", 
-        "🧠 Inteligência (Outliers)", 
-        "📄 Dados Detalhados"
-    ])
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("💰 Custo Total", f"R$ {total_custo:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
+    c2.metric("⏱️ Horas Totais", f"{total_horas:,.1f}")
+    c3.metric("👥 Colaboradores", qtd_colab)
+    c4.metric("📊 Ticket Médio", f"R$ {media:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
 
-    # 1. Visão Geral
+    # --- Abas ---
+    tab1, tab2, tab3 = st.tabs(["🏢 Visão Geral & Comparativo", "🧠 Inteligência (Outliers)", "📑 Tabela Detalhada"])
+
+    # ABA 1: Visão Geral
     with tab1:
-        c1, c2 = st.columns([2, 1])
-        with c1:
-            st.subheader("Custos por Tipo de Evento")
-            fig_bar = px.bar(
-                df.groupby('Tipo de Evento')['Valor (R$)'].sum().reset_index().sort_values('Valor (R$)', ascending=True),
-                x='Valor (R$)', y='Tipo de Evento', orientation='h', text_auto='.2s',
-                title="Distribuição de Valores"
-            )
-            st.plotly_chart(fig_bar, use_container_width=True)
-            
-        with c2:
-            st.subheader("Top Cargos")
-            df_pie = df.groupby('Cargo')['Valor (R$)'].sum().reset_index().sort_values('Valor (R$)', ascending=False).head(7)
-            fig_pie = px.pie(df_pie, values='Valor (R$)', names='Cargo', hole=0.4)
-            st.plotly_chart(fig_pie, use_container_width=True)
+        col_g1, col_g2 = st.columns(2)
+        with col_g1:
+            st.markdown("#### Custo por Empresa")
+            fig_emp = px.bar(df.groupby('Empresa')['Valor (R$)'].sum().reset_index(), x='Empresa', y='Valor (R$)', color='Empresa', text_auto='.2s')
+            st.plotly_chart(fig_emp, use_container_width=True)
+        with col_g2:
+            st.markdown("#### Custo por Tipo de Evento")
+            fig_evt = px.pie(df.groupby('Tipo de Evento')['Valor (R$)'].sum().reset_index(), values='Valor (R$)', names='Tipo de Evento', hole=0.4)
+            st.plotly_chart(fig_evt, use_container_width=True)
 
-    # 2. Comparativo
+    # ABA 2: Outliers
     with tab2:
-        if len(sel_empresas) > 1:
-            col_comp1, col_comp2 = st.columns(2)
-            with col_comp1:
-                df_total_emp = df.groupby('Empresa')['Valor (R$)'].sum().reset_index()
-                fig_comp1 = px.bar(df_total_emp, x='Empresa', y='Valor (R$)', color='Empresa', title="Custo Total por Empresa", text_auto='.2s')
-                st.plotly_chart(fig_comp1, use_container_width=True)
-            with col_comp2:
-                df_avg = df.groupby('Empresa').agg({'Valor (R$)': 'sum', 'ID Func': 'nunique'}).reset_index()
-                df_avg['Media'] = df_avg['Valor (R$)'] / df_avg['ID Func']
-                fig_comp2 = px.bar(df_avg, x='Empresa', y='Media', color='Empresa', title="Custo Médio por Colaborador", text_auto='.2f')
-                st.plotly_chart(fig_comp2, use_container_width=True)
+        limite_horas = st.number_input("Alerta de Horas Acima de:", value=100)
+        df_out = df.groupby(['Nome', 'Empresa', 'Cargo'])['Horas Decimais'].sum().reset_index()
+        outliers = df_out[df_out['Horas Decimais'] > limite_horas].sort_values('Horas Decimais', ascending=False)
+        if not outliers.empty:
+            st.warning(f"{len(outliers)} colaboradores excederam {limite_horas} horas.")
+            outliers['Horas'] = outliers['Horas Decimais'].apply(formatar_horas_decimal_para_str)
+            st.dataframe(outliers[['Nome', 'Empresa', 'Horas', 'Cargo']], use_container_width=True)
         else:
-            st.info("Selecione mais de uma empresa na barra lateral para ativar o modo comparativo.")
+            st.success("Tudo dentro dos conformes.")
 
-    # 3. Inteligência (Outliers)
+    # ABA 3: Tabela Detalhada (Pivot)
     with tab3:
-        st.markdown("### 🚨 Detecção de Anomalias")
-        col_out1, col_out2 = st.columns([1, 3])
-        with col_out1:
-            limite_horas = st.number_input("Limite de Horas", value=100, step=10)
-            limite_valor = st.number_input("Limite de Valor (R$)", value=5000.0, step=500.0)
-            
-        with col_out2:
-            df_func = df.groupby(['Nome', 'Empresa', 'Cargo']).agg({
-                'Horas Decimais': 'sum',
-                'Valor (R$)': 'sum'
-            }).reset_index()
-            outliers = df_func[
-                (df_func['Horas Decimais'] > limite_horas) | 
-                (df_func['Valor (R$)'] > limite_valor)
-            ].sort_values('Valor (R$)', ascending=False)
-            
-            if not outliers.empty:
-                st.warning(f"{len(outliers)} colaboradores encontrados acima dos limites.")
-                outliers_display = outliers.copy()
-                outliers_display['Valor (R$)'] = outliers_display['Valor (R$)'].apply(lambda x: f"R$ {x:,.2f}")
-                outliers_display['Horas Decimais'] = outliers_display['Horas Decimais'].apply(lambda x: f"{x:.2f}")
-                st.dataframe(outliers_display, use_container_width=True, hide_index=True)
-            else:
-                st.success("Nenhum colaborador ultrapassou os limites.")
-
-    # 4. Dados Detalhados (COM A LÓGICA NOVA)
-    with tab4:
-        st.markdown("### 📑 Tabela Detalhada por Funcionário")
-        
-        # 1. Categorizar Eventos (60%, DSR ou Outros)
-        def categorizar_evento(evento):
-            evt = str(evento).upper()
-            if "60%" in evt: return "60%"
-            if "DSR" in evt: return "DSR"
+        def cat_evento(e):
+            e = str(e).upper()
+            if "60%" in e: return "60%"
+            if "DSR" in e: return "DSR"
             return "OUTROS"
-            
-        df['Categoria_Temp'] = df['Tipo de Evento'].apply(categorizar_evento)
         
-        # 2. Pivotar (Transformar linhas em colunas)
-        pivot_df = df.pivot_table(
-            index=['Empresa', 'Competência', 'ID Func', 'Nome', 'Cargo'],
-            columns='Categoria_Temp',
+        df['Cat'] = df['Tipo de Evento'].apply(cat_evento)
+        
+        pivot = df.pivot_table(
+            index=['Empresa', 'Competência', 'Nome', 'Cargo'],
+            columns='Cat',
             values=['Horas Decimais', 'Valor (R$)'],
             aggfunc='sum',
             fill_value=0
         )
         
-        # 3. Achatamento das colunas MultiIndex
-        pivot_df.columns = [f'{col[0]}|{col[1]}' for col in pivot_df.columns]
-        pivot_df = pivot_df.reset_index()
+        pivot.columns = [f'{c[0]}|{c[1]}' for c in pivot.columns]
+        pivot = pivot.reset_index()
         
-        # 4. Garantir que as colunas existam (caso não tenha nenhum DSR no filtro, por exemplo)
-        cols_esperadas = [
-            'Horas Decimais|60%', 'Valor (R$)|60%', 
-            'Horas Decimais|DSR', 'Valor (R$)|DSR'
-        ]
-        for col in cols_esperadas:
-            if col not in pivot_df.columns:
-                pivot_df[col] = 0.0
-
-        # 5. Criar Coluna Total Geral
-        pivot_df['Total Geral (R$)'] = pivot_df['Valor (R$)|60%'] + pivot_df['Valor (R$)|DSR']
+        # Cria colunas se não existirem
+        for c in ['Valor (R$)|60%', 'Valor (R$)|DSR', 'Horas Decimais|60%', 'Horas Decimais|DSR']:
+            if c not in pivot.columns: pivot[c] = 0.0
+            
+        pivot['Total (R$)'] = pivot['Valor (R$)|60%'] + pivot['Valor (R$)|DSR']
+        if 'Valor (R$)|OUTROS' in pivot.columns: pivot['Total (R$)'] += pivot['Valor (R$)|OUTROS']
         
-        # Se houver categoria "OUTROS", somar também
-        if 'Valor (R$)|OUTROS' in pivot_df.columns:
-             pivot_df['Total Geral (R$)'] += pivot_df['Valor (R$)|OUTROS']
-
-        # 6. Renomear e Organizar para Exibição Final
-        df_final = pivot_df.copy()
+        # Formata
+        final = pivot.copy()
+        final['Banco 60%'] = final['Horas Decimais|60%'].apply(formatar_horas_decimal_para_str)
+        final['Horas DSR'] = final['Horas Decimais|DSR'].apply(formatar_horas_decimal_para_str)
         
-        # Converter horas decimais para string HH:MM para a coluna visual (opcional, mas solicitado "Banco de Hora")
-        df_final['Banco de Hora 60%'] = df_final['Horas Decimais|60%'].apply(formatar_horas_decimal_para_str)
-        df_final['Horas DSR'] = df_final['Horas Decimais|DSR'].apply(formatar_horas_decimal_para_str)
+        cols_show = ['Empresa', 'Competência', 'Nome', 'Cargo', 'Banco 60%', 'Valor (R$)|60%', 'Horas DSR', 'Valor (R$)|DSR', 'Total (R$)']
+        # Filtra colunas existentes
+        cols_show = [c for c in cols_show if c in final.columns]
         
-        # Selecionar colunas finais
-        colunas_finais = [
-            'Empresa', 'Competência', 'Nome', 'Cargo',
-            'Banco de Hora 60%', 'Valor (R$)|60%',
-            'Horas DSR', 'Valor (R$)|DSR',
-            'Total Geral (R$)'
-        ]
-        
-        df_exibicao = df_final[colunas_finais].copy()
-        
-        # Renomear para ficar bonito no header
-        df_exibicao.columns = [
-            'Empresa', 'Competência', 'Nome', 'Cargo',
-            'Banco de Hora 60%', 'Valor 60% (R$)',
-            'Horas DSR', 'Valor DSR (R$)',
-            'Total Geral (R$)'
-        ]
-        
-        # Formatação de Moeda
-        colunas_valor = ['Valor 60% (R$)', 'Valor DSR (R$)', 'Total Geral (R$)']
-        for col in colunas_valor:
-            df_exibicao[col] = df_exibicao[col].apply(lambda x: f"R$ {x:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-
-        st.dataframe(df_exibicao, use_container_width=True, hide_index=True)
-        
-        # Download
-        csv_buffer = df_exibicao.to_csv(index=False).encode('utf-8-sig')
-        st.download_button(
-            label="📥 Baixar Planilha Consolidada (Excel/CSV)",
-            data=csv_buffer,
-            file_name="relatorio_consolidado_folha.csv",
-            mime="text/csv"
-        )
-
-else:
-    st.info("Aguardando upload dos arquivos CSV...")
-    st.markdown("""
-        **Instruções:**
-        1. Clique em 'Browse files' acima.
-        2. Selecione todos os arquivos CSV (ex: BD, Matias, Candeias).
-        3. O sistema identificará automaticamente as empresas e gerará o dashboard.
-    """)
+        st.dataframe(final[cols_show].style.format({"Valor (R$)|60%": "R$ {:,.2f}", "Valor (R$)|DSR": "R$ {:,.2f}", "Total (R$)": "R$ {:,.2f}"}), use_container_width=True)
